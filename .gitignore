@@ -4,6 +4,10 @@
 *.obj
 *.pdb
 *.cache
+license-db.xml
+admin-token.txt
+private-key.xml
+server-private-key.xml
 
 # Logo dosyasi (kod icine gomuldu)
 logo.ico
