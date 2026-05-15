@@ -198,7 +198,7 @@ namespace AdvancedDiskAnalyzer
         private bool ultraFastMode = true;
         private DateTime scoreOldFileThreshold = DateTime.Now.AddYears(-1);
 
-        private const string AppVersion = "v1.9 Beta";
+        private const string AppVersion = "v1.7 Beta";
         private const string EulaRegistryPath = @"Software\AdvancedDiskAnalyzer";
         private const string EulaStampDate = "2026-05-07";
         private const string PurchaseUrl = "https://advanced-disk-analyzer.com/pricing";
@@ -208,7 +208,7 @@ namespace AdvancedDiskAnalyzer
         private const int DisplayFileLimit = 10000;
         private readonly string[] listColumnTitles = new string[]
         {
-            "Dosya Adi", "Boyut", "Skor", "Tarih", "Tur", "Konum"
+            "Dosya Adı", "Boyut", "Skor", "Tarih", "Tur", "Konum"
         };
 
         public MainForm()
@@ -279,39 +279,39 @@ namespace AdvancedDiskAnalyzer
             menu.Renderer = new ToolStripProfessionalRenderer(new DarkMenuColorTable());
 
             ToolStripMenuItem file = MenuRoot("Dosya");
-            file.DropDownItems.Add(MenuCommand("Klasor Tara...", ScanButton_Click, Keys.Control | Keys.O));
+            file.DropDownItems.Add(MenuCommand("Klasör Tara...", ScanButton_Click, Keys.Control | Keys.O));
             file.DropDownItems.Add(new ToolStripSeparator());
-            file.DropDownItems.Add(MenuCommand("CSV Disari Aktar", CsvButton_Click, Keys.Control | Keys.E));
+            file.DropDownItems.Add(MenuCommand("CSV Dısarı Aktar", CsvButton_Click, Keys.Control | Keys.E));
             file.DropDownItems.Add(MenuCommand("PDF Rapor Al", PdfReportBtn_Click, Keys.Control | Keys.P));
             file.DropDownItems.Add(new ToolStripSeparator());
-            file.DropDownItems.Add(MenuCommand("Cikis", delegate { this.Close(); }, Keys.Alt | Keys.F4));
+            file.DropDownItems.Add(MenuCommand("çıkış", delegate { this.Close(); }, Keys.Alt | Keys.F4));
 
-            ToolStripMenuItem view = MenuRoot("Gorunum");
+            ToolStripMenuItem view = MenuRoot("Görünüm");
             view.DropDownItems.Add(MenuCommand("Grafik Paneli", delegate { tabControl.SelectedIndex = 0; }, Keys.Control | Keys.D1));
             view.DropDownItems.Add(MenuCommand("Treemap Paneli", delegate { tabControl.SelectedIndex = 1; }, Keys.Control | Keys.D2));
-            view.DropDownItems.Add(MenuCommand("AI Oneriler", delegate { tabControl.SelectedIndex = 2; }, Keys.Control | Keys.D3));
+            view.DropDownItems.Add(MenuCommand("AI öneriler", delegate { tabControl.SelectedIndex = 2; }, Keys.Control | Keys.D3));
             view.DropDownItems.Add(new ToolStripSeparator());
-            view.DropDownItems.Add(MenuCommand("Temayi Degistir", ThemeButton_Click, Keys.Control | Keys.T));
+            view.DropDownItems.Add(MenuCommand("Temayı Değiştir", ThemeButton_Click, Keys.Control | Keys.T));
 
-            ToolStripMenuItem tools = MenuRoot("Araclar");
-            tools.DropDownItems.Add(MenuCommand("Top 100 Buyuk Dosya", TopFilesButton_Click, Keys.F6));
-            tools.DropDownItems.Add(MenuCommand("Kopyalari Bul", DuplicatesButton_Click, Keys.F7));
+            ToolStripMenuItem tools = MenuRoot("Araçlar");
+            tools.DropDownItems.Add(MenuCommand("Top 100 Büyük Dosya", TopFilesButton_Click, Keys.F6));
+            tools.DropDownItems.Add(MenuCommand("Kopyaları Bul", DuplicatesButton_Click, Keys.F7));
             tools.DropDownItems.Add(MenuCommand("Listeyi Yenile", delegate { RefreshCurrentView(); }, Keys.F5));
             tools.DropDownItems.Add(new ToolStripSeparator());
-            ultraFastScanMenuItem = MenuCommand("Ultra Hizli Tarama", delegate { }, Keys.Control | Keys.U);
+            ultraFastScanMenuItem = MenuCommand("Ultra Hızlı Tarama", delegate { }, Keys.Control | Keys.U);
             ultraFastScanMenuItem.CheckOnClick = true;
             ultraFastScanMenuItem.Checked = ultraFastMode;
             ultraFastScanMenuItem.CheckedChanged += ToggleUltraFastScan_Click;
             tools.DropDownItems.Add(ultraFastScanMenuItem);
-            tools.DropDownItems.Add(MenuCommand("Tarama Gecmisini Ac", OpenScanHistory_Click, Keys.Control | Keys.G));
+            tools.DropDownItems.Add(MenuCommand("Tarama Geçmişini Aç", OpenScanHistory_Click, Keys.Control | Keys.G));
 
             ToolStripMenuItem license = MenuRoot("Lisans");
             license.DropDownItems.Add(MenuCommand("Hesap...", AccountButton_Click, Keys.Control | Keys.H));
             license.DropDownItems.Add(MenuCommand("Plan ve Aktivasyon...", LicenseButton_Click, Keys.Control | Keys.L));
 
-            ToolStripMenuItem help = MenuRoot("Yardim");
+            ToolStripMenuItem help = MenuRoot("Yardım");
             help.DropDownItems.Add(MenuCommand("Gizlilik / EULA", delegate { ShowPrivacyInfo(); }, Keys.F1));
-            help.DropDownItems.Add(MenuCommand("Kurumsal Satis", delegate { OpenExternalUrl(EnterpriseContactUrl); }, Keys.None));
+            help.DropDownItems.Add(MenuCommand("Kurumsal Satış", delegate { OpenExternalUrl(EnterpriseContactUrl); }, Keys.None));
 
             menu.Items.Add(file);
             menu.Items.Add(view);
@@ -325,8 +325,8 @@ namespace AdvancedDiskAnalyzer
         {
             ultraFastMode = ultraFastScanMenuItem == null || ultraFastScanMenuItem.Checked;
             statusLabel.Text = ultraFastMode
-                ? "Ultra hizli tarama acik: UI akisi sinirli, tarama oncelikli."
-                : "Standart tarama acik: daha fazla canli liste gosterilir.";
+                ? "Ultra hızlı tarama açık: UI akışı sınırlı, tarama öncelikli."
+                : "Standart tarama açık: daha fazla canlı liste gösterilir.";
         }
 
         private ToolStripMenuItem MenuRoot(string text)
@@ -381,7 +381,7 @@ namespace AdvancedDiskAnalyzer
             }
             int version = Interlocked.Increment(ref treeSelectionVersion);
             DirectoryNode node = currentSelectedDirectory;
-            statusLabel.Text = "Gorunum yenileniyor...";
+            statusLabel.Text = "Görünüm yenileniyor...";
             List<FileNode> files = await Task.Run<List<FileNode>>(() =>
             {
                 List<FileNode> result = new List<FileNode>();
@@ -404,7 +404,7 @@ namespace AdvancedDiskAnalyzer
         private void OpenExternalUrl(string url)
         {
             try { Process.Start(url); }
-            catch (Exception ex) { MessageBox.Show(ex.Message, "Baglanti", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            catch (Exception ex) { MessageBox.Show(ex.Message, "Bağlantı", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         }
 
         private void InitializeUI()
@@ -555,7 +555,7 @@ namespace AdvancedDiskAnalyzer
             toolbarPanel.Controls.Add(liveCountLabel);
             LayoutToolbar();
 
-            // --- Ag Surucusu Banner (basta gizli) ---
+            // --- Ağ Sürücüsü Banner (basta gizli) ---
             networkBanner = new Panel();
             networkBanner.Dock = DockStyle.Top;
             networkBanner.Height = 32;
@@ -699,7 +699,7 @@ namespace AdvancedDiskAnalyzer
             treemapPanel.MouseClick += TreemapPanel_MouseClick;
             treemapTab.Controls.Add(treemapPanel);
 
-            TabPage aiTab = new TabPage("  AI Oneriler  ");
+            TabPage aiTab = new TabPage("  AI öneriler  ");
             aiHost = new Panel();
             aiHost.Dock = DockStyle.Fill;
             aiPanel = new SmoothScrollPanel();
@@ -775,8 +775,8 @@ namespace AdvancedDiskAnalyzer
             listScrollBar.BringToFront();
 
             listContextMenu = new ContextMenuStrip();
-            ToolStripMenuItem openItem   = new ToolStripMenuItem("  Ac (Explorer)");
-            ToolStripMenuItem copyItem   = new ToolStripMenuItem("  Yolu Kopyala");
+            ToolStripMenuItem openItem   = new ToolStripMenuItem("  Aç (Explorer)");
+            ToolStripMenuItem copyItem   = new ToolStripMenuItem("  yolu Kopyala");
             ToolStripMenuItem deleteItem = new ToolStripMenuItem("  Sil");
             openItem.Click   += ContextMenu_Open;
             copyItem.Click   += ContextMenu_CopyPath;
@@ -787,7 +787,7 @@ namespace AdvancedDiskAnalyzer
             listContextMenu.Items.Add(deleteItem);
             listView.ContextMenuStrip = listContextMenu;
 
-            // Ekleme sirasi onemli: banner toolbar'in altinda gorunmeli
+            // Ekleme sırası önemli: banner toolbar'ın altında görünmeli
             this.Controls.Add(listHost);
             this.Controls.Add(treeHost);
             this.Controls.Add(tabControl);
@@ -922,7 +922,7 @@ namespace AdvancedDiskAnalyzer
             }
             catch
             {
-                MessageBox.Show("Gizlilik onayi registry'e yazilamadi. Uygulama bu oturumda devam edecek.",
+                MessageBox.Show("Gizlilik onayı registry'e yazılamadı. Uygulama bu oturumda devam edecek.",
                     "Uyari", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
@@ -932,7 +932,7 @@ namespace AdvancedDiskAnalyzer
         // =====================================================================
 
         /// <summary>
-        /// Verilen path'in ag surucusu (mapped drive veya UNC) olup olmadigini dondurur.
+        /// Verilen path'in ağ sürücüsü (mapped drive veya UNC) olup olmadığını dondurur.
         /// </summary>
         private bool IsNetworkPath(string path)
         {
@@ -980,7 +980,7 @@ namespace AdvancedDiskAnalyzer
         }
 
         /// <summary>
-        /// Banner'i goster veya gizle, renk ve metin ayarla.
+        /// Banner'i göster veya gizle, renk ve metin ayarla.
         /// </summary>
         private void ShowNetworkBanner(bool show, string message = "")
         {
@@ -1056,7 +1056,7 @@ namespace AdvancedDiskAnalyzer
             liveCountLabel.ForeColor = Theme.Success;
             ApplySidebarTheme();
 
-            // Banner rengi guncelle
+            // Banner rengi güncelle
             if (networkBanner.Visible)
                 ShowNetworkBanner(true, networkBannerLabel.Text);
 
@@ -1244,7 +1244,7 @@ namespace AdvancedDiskAnalyzer
                 {
                     RefreshLicenseUi();
                     statusLabel.Text = string.IsNullOrEmpty(OnlineLicenseClient.GetSavedEmail())
-                        ? "Hesap oturumu kapali."
+                        ? "Hesap oturumu kapalı."
                         : "Hesap aktif: " + OnlineLicenseClient.GetSavedEmail();
                 }
             }
@@ -1292,7 +1292,7 @@ namespace AdvancedDiskAnalyzer
 
         private void ListView_DrawItem(object sender, DrawListViewItemEventArgs e)
         {
-            // SubItem cizimi tum satiri kontrol ediyor.
+            // SubItem çizimi tüm satırı kontrol ediyor.
         }
 
         private void ListView_DrawSubItem(object sender, DrawListViewSubItemEventArgs e)
@@ -1493,7 +1493,7 @@ namespace AdvancedDiskAnalyzer
             isNetworkDrive = IsNetworkPath(selectedPath);
             if (isNetworkDrive)
             {
-                if (!EnsureFeature(LicenseFeature.NetworkScan, "Ag surucusu taramasi"))
+                if (!EnsureFeature(LicenseFeature.NetworkScan, "Ağ sürücüsü taraması"))
                     return;
 
                 networkDriveInfo = GetNetworkDriveDetail(selectedPath);
@@ -1503,10 +1503,10 @@ namespace AdvancedDiskAnalyzer
 
                 // Kullaniciya bilgi ver, onay al
                 DialogResult confirm = MessageBox.Show(
-                    "Ag surucusu secildi:\n" + networkDriveInfo +
-                    "\n\nAg taramasi lokal taramadan cok daha yavas olabilir." +
+                    "Ag sürücüsü seçildi:\n" + networkDriveInfo +
+                    "\n\nAğ taraması lokal taramadan çok daha yavaş olabilir." +
                     "\nDevam etmek istiyor musunuz?",
-                    "Ag Surucusu Algilandi",
+                    "Ağ Sürücüsü Algılandı",
                     MessageBoxButtons.YesNo,
                     MessageBoxIcon.Information);
 
@@ -1568,9 +1568,9 @@ namespace AdvancedDiskAnalyzer
                 if (!isNetworkDrive)
                     DetectDriveType(selectedPath);
                 else
-                    statusLabel.Text = "Ag surucusu - yavas mod (2 is parcacigi)";
+                    statusLabel.Text = "Ag sürücüsü - yavaş mod (2 iş parçacığı)";
                 if (ultraFastMode && !isNetworkDrive)
-                    statusLabel.Text += "  |  Ultra hizli mod";
+                    statusLabel.Text += "  |  Ultra hızlı mod";
 
                 sw.Start();
                 DirectoryNode scannedRoot = await Task.Run(() => FastScan(selectedPath, token), token);
@@ -1611,7 +1611,7 @@ namespace AdvancedDiskAnalyzer
             catch (OperationCanceledException)
             {
                 sw.Stop();
-                statusLabel.Text = "Tarama iptal edildi. Listede tarama anina kadar bulunan dosyalar kaldi.";
+                statusLabel.Text = "Tarama iptal edildi. Listede tarama anına kadar bulunan dosyalar kaldı.";
                 statFiles.Text = string.Format("{0:N0} dosya bulundu", totalFilesFound);
                 statTime.Text = "Sure: " + sw.Elapsed.TotalSeconds.ToString("F1") + "sn";
                 UpdateSummaryCards(null, string.Format("{0:N0}", totalFilesFound), sw.Elapsed.TotalSeconds.ToString("F1") + " sn", selectedPath);
@@ -1620,7 +1620,7 @@ namespace AdvancedDiskAnalyzer
             {
                 sw.Stop();
                 statusLabel.Text = "Tarama durduruldu: " + ex.Message;
-                MessageBox.Show("Tarama sirasinda hata olustu:\n\n" + ex.Message, "Tarama", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Tarama sırasında hata oluştu:\n\n" + ex.Message, "Tarama", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             finally
             {
@@ -1675,9 +1675,9 @@ namespace AdvancedDiskAnalyzer
 
                 DirectoryInfo[] subDirs = SafeEnumerateDirectoryInfos(path);
 
-                // Ag surucusu: max 2 thread (ag tikanmamasi icin)
-                // SSD: tam paralel (CPU sayisi kadar)
-                // HDD: 2 thread (kafa carpismasi onleme)
+                // Ag sürücüsü: max 2 thread (ağ tıkanmaması için)
+                // SSD: tam paralel (CPU sayısı kadar)
+                // HDD: 2 thread (kafa çarpışması önleme)
                 int deg = GetScanDegree(depth);
                 bool useParallel = ShouldParallelize(subDirs.Length, depth);
 
@@ -1897,7 +1897,7 @@ namespace AdvancedDiskAnalyzer
             int version = Interlocked.Increment(ref treeSelectionVersion);
             string filter = filterBox.Text.Trim().ToLowerInvariant();
             List<FileNode> source = currentSelectionFiles;
-            statusLabel.Text = string.IsNullOrEmpty(filter) ? "Liste yenileniyor..." : "Filtre uygulaniyor...";
+            statusLabel.Text = string.IsNullOrEmpty(filter) ? "Liste yenileniyor..." : "Filtre uygulanıyor...";
 
             List<FileNode> files = await Task.Run<List<FileNode>>(() =>
             {
@@ -1916,7 +1916,7 @@ namespace AdvancedDiskAnalyzer
             await PopulateListViewAsync(files, version);
             statusLabel.Text = string.IsNullOrEmpty(filter)
                 ? string.Format("{0:N0} dosya listelendi", files.Count)
-                : string.Format("{0:N0} eslesme", files.Count);
+                : string.Format("{0:N0} eşleşme", files.Count);
         }
 
         private async void TopFilesButton_Click(object sender, EventArgs e)
@@ -1924,7 +1924,7 @@ namespace AdvancedDiskAnalyzer
             if (rootNode == null) return;
             ClearFilterBoxSilently();
             int version = Interlocked.Increment(ref treeSelectionVersion);
-            statusLabel.Text = "En buyuk 100 dosya hazirlaniyor...";
+            statusLabel.Text = "En büyük 100 dosya hazırlanıyor...";
             List<FileNode> files = await Task.Run<List<FileNode>>(() =>
             {
                 List<FileNode> all = new List<FileNode>();
@@ -1943,7 +1943,7 @@ namespace AdvancedDiskAnalyzer
             if (rootNode == null) return;
             ClearFilterBoxSilently();
             int version = Interlocked.Increment(ref treeSelectionVersion);
-            statusLabel.Text = "Olasi kopyalar hazirlaniyor...";
+            statusLabel.Text = "Olası kopyalar hazırlanıyor...";
             List<FileNode> files = await Task.Run<List<FileNode>>(() =>
             {
                 List<FileNode> all = new List<FileNode>();
@@ -1965,7 +1965,7 @@ namespace AdvancedDiskAnalyzer
         {
             if (rootNode == null)
             {
-                MessageBox.Show("Once bir tarama yapin.", "CSV", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("önce bir tarama yapın.", "CSV", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -1996,11 +1996,11 @@ namespace AdvancedDiskAnalyzer
                         }));
                     }
                 }
-                MessageBox.Show("CSV olusturuldu:\n" + dialog.FileName, "CSV", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("CSV oluşturuldu:\n" + dialog.FileName, "CSV", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
-                MessageBox.Show("CSV olusturulamadi:\n" + ex.Message, "CSV", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("CSV oluşturulamadı:\n" + ex.Message, "CSV", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -2020,7 +2020,7 @@ namespace AdvancedDiskAnalyzer
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Tarama gecmisi acilamadi:\n" + ex.Message, "Tarama Gecmisi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Tarama geçmişi açılamadı:\n" + ex.Message, "Tarama Geçmişi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
 
@@ -2081,7 +2081,7 @@ namespace AdvancedDiskAnalyzer
             currentSelectedDirectory = node;
             currentVisualNode = node;
             ClearFilterBoxSilently();
-            statusLabel.Text = "Klasor icerigi hazirlaniyor...";
+            statusLabel.Text = "Klasör içeriği hazırlanıyor...";
 
             List<FileNode> files = await Task.Run<List<FileNode>>(() =>
             {
@@ -2101,7 +2101,7 @@ namespace AdvancedDiskAnalyzer
             piePanel.Invalidate();
             treemapPanel.Invalidate();
             statusLabel.Text = node.Name + "  |  " + string.Format("{0:N0}", files.Count) +
-                (files.Count > DisplayFileLimit ? " dosya, ilk " + string.Format("{0:N0}", DisplayFileLimit) + " gosteriliyor" : " dosya listelendi");
+                (files.Count > DisplayFileLimit ? " dosya, ilk " + string.Format("{0:N0}", DisplayFileLimit) + " gösteriliyor" : " dosya listelendi");
             RefreshModernScrollBars();
         }
 
@@ -2232,7 +2232,7 @@ namespace AdvancedDiskAnalyzer
             int w = piePanel.Width, h = piePanel.Height;
             g.Clear(Theme.Bg);
 
-            g.DrawString("Boyut Dagilimi",
+            g.DrawString("Boyut Dağılımı",
                 new Font("Segoe UI", 11, FontStyle.Bold),
                 new SolidBrush(Theme.Text), new PointF(16, 14));
 
@@ -2386,7 +2386,7 @@ namespace AdvancedDiskAnalyzer
             {
                 using (Font font = new Font("Segoe UI", 9))
                 using (Brush brush = new SolidBrush(Theme.SubText))
-                    g.DrawString("Tarama sonrasi alan haritasi burada gorunur.", font, brush, 16, 50);
+                    g.DrawString("Tarama sonrası alan haritası burada görünür.", font, brush, 16, 50);
                 return;
             }
 
@@ -2553,7 +2553,7 @@ namespace AdvancedDiskAnalyzer
             currentVisualNode = node;
             currentSelectedDirectory = node;
             int version = Interlocked.Increment(ref treeSelectionVersion);
-            statusLabel.Text = node.Name + " treemap secimi hazirlaniyor...";
+            statusLabel.Text = node.Name + " treemap seçimi hazırlanıyor...";
 
             List<FileNode> files = await Task.Run<List<FileNode>>(() =>
             {
@@ -2608,8 +2608,8 @@ namespace AdvancedDiskAnalyzer
             // Ag surucusu ise ozel not goster
             if (isNetworkDrive)
             {
-                AddAiSection(ref y, "AG SURUCUSU TARAMASI  |  " + networkDriveInfo, Theme.Warning);
-                AddAiNote(ref y, "Silme islemi ag uzerinden yapilacaktir. Dikkatli olun.");
+                AddAiSection(ref y, "AĞ SÜRÜCÜSÜ TARAMASI  |  " + networkDriveInfo, Theme.Warning);
+                AddAiNote(ref y, "Silme işlemi ağ üzerinden yapılacaktır. Dikkatli olun.");
                 y += 6;
             }
 
@@ -2622,12 +2622,12 @@ namespace AdvancedDiskAnalyzer
 
             if (deletable.Count > 0)
             {
-                AddAiSection(ref y, "SILINEBILECEK  /  " + deletable.Count + " dosya  /  " + FormatSize(deletableSize) + " kazanc", Theme.Danger);
+                AddAiSection(ref y, "SİLİNEBİLECEK  /  " + deletable.Count + " dosya  /  " + FormatSize(deletableSize) + " kazanc", Theme.Danger);
 
                 Button deleteAllBtn = new Button();
                 deleteAllBtn.Text = LicenseManager.HasFeature(currentLicense, LicenseFeature.BulkDelete)
-                    ? "Tumunu Sil  -  " + FormatSize(deletableSize) + " Alan Ac"
-                    : "Tumunu Sil  (Enterprise)";
+                    ? "Tümünü Sil  -  " + FormatSize(deletableSize) + " Alan Aç"
+                    : "Tümünü Sil  (Enterprise)";
                 deleteAllBtn.Location = new Point(12, y);
                 deleteAllBtn.Size = new Size(420, 34);
                 deleteAllBtn.BackColor = Theme.Danger;
@@ -2653,7 +2653,7 @@ namespace AdvancedDiskAnalyzer
 
             if (bigOld.Count > 0)
             {
-                AddAiSection(ref y, "BUYUK & ESKI  /  " + bigOld.Count + " adet  /  50MB+ ve 1 yil+", Theme.Warning);
+                AddAiSection(ref y, "BÜYÜK & ESKİ  /  " + bigOld.Count + " adet  /  50MB+ ve 1 yıl+", Theme.Warning);
                 foreach (var f in bigOld)
                     AddAiRow(ref y, f.Name, FormatSize(f.Size) + "  " + f.LastModified.ToString("yyyy-MM-dd"), Theme.Warning);
                 y += 10;
@@ -2696,13 +2696,13 @@ namespace AdvancedDiskAnalyzer
                 y += 10;
             }
 
-            AddAiSection(ref y, "OZET", Theme.Success);
+            AddAiSection(ref y, "ÖZET", Theme.Success);
             AddAiRow(ref y, "Toplam boyut", FormatSize(root.Size), Theme.Success);
             AddAiRow(ref y, "Toplam dosya", string.Format("{0:N0}", allFiles.Count), Theme.Success);
             AddAiRow(ref y, "Temizlenebilir", FormatSize(deletableSize), Theme.Success);
             AddAiRow(ref y, "Tekrar alan", FormatSize(duplicateWaste), Theme.Success);
             if (isNetworkDrive)
-                AddAiRow(ref y, "Tarama turu", "Ag Surucusu", Theme.Warning);
+                AddAiRow(ref y, "Tarama türü", "Ağ Sürücüsü", Theme.Warning);
 
             aiPanel.AutoScrollMinSize = new Size(0, y + 26);
             SmoothScrollPanel smooth = aiPanel as SmoothScrollPanel;
@@ -2766,13 +2766,13 @@ namespace AdvancedDiskAnalyzer
 
             if (rootNode == null)
             {
-                MessageBox.Show("Once bir klasor taramasi yapin.", "PDF Rapor", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("önce bir klasör taraması yapın.", "PDF Rapor", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
             SaveFileDialog dialog = new SaveFileDialog();
             dialog.Title = "PDF Rapor Kaydet";
-            dialog.Filter = "PDF dosyasi (*.pdf)|*.pdf";
+            dialog.Filter = "PDF dosyası (*.pdf)|*.pdf";
             dialog.FileName = "AdvancedDiskAnalyzer_Report_" + DateTime.Now.ToString("yyyyMMdd_HHmm") + ".pdf";
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
@@ -2794,12 +2794,12 @@ namespace AdvancedDiskAnalyzer
                 PdfReportExporter.Save(dialog.FileName, rootNode, selectedScanPath,
                     isNetworkDrive, networkDriveInfo, chartBytes, chartWidth, chartHeight);
 
-                MessageBox.Show("PDF rapor olusturuldu:\n" + dialog.FileName,
+                MessageBox.Show("PDF rapor oluşturuldu:\n" + dialog.FileName,
                     "PDF Rapor", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
-                MessageBox.Show("PDF rapor olusturulamadi:\n" + ex.Message,
+                MessageBox.Show("PDF rapor oluşturulamadı:\n" + ex.Message,
                     "PDF Rapor", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
@@ -2821,7 +2821,7 @@ namespace AdvancedDiskAnalyzer
                 {
                     using (Font font = new Font("Segoe UI", 11))
                     using (Brush brush = new SolidBrush(Color.FromArgb(90, 95, 120)))
-                        g.DrawString("Grafik icin veri yok.", font, brush, 34, 80);
+                        g.DrawString("Grafik için veri yok.", font, brush, 34, 80);
                     return bmp;
                 }
 
@@ -2882,8 +2882,8 @@ namespace AdvancedDiskAnalyzer
             int count = deletableFilePaths.Count; if (count == 0) return;
 
             string warning = isNetworkDrive
-                ? count + " dosya AG SURUCUSUNDEN silinecek. Geri alinamaz!\n\nSunucu: " + networkDriveInfo
-                : count + " dosya silinecek. Geri alinamaz!";
+                ? count + " dosya AĞ SÜRÜCÜSÜNDEN silinecek. Geri alınamaz!\n\nSunucu: " + networkDriveInfo
+                : count + " dosya silinecek. Geri alınamaz!";
 
             if (MessageBox.Show(warning, "Onay", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
             int deleted = 0; long freed = 0;
@@ -2903,8 +2903,8 @@ namespace AdvancedDiskAnalyzer
             deletableFilePaths.Clear();
             if (deletedPaths.Count > 0)
                 ApplyDeletedFilesToModel(deletedPaths, freed);
-            string msg = deleted + " dosya silindi, " + FormatSize(freed) + " kazanildi.";
-            MessageBox.Show(msg, "Tamamlandi", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            string msg = deleted + " dosya silindi, " + FormatSize(freed) + " kazanıldı.";
+            MessageBox.Show(msg, "Tamamlandı", MessageBoxButtons.OK, MessageBoxIcon.Information);
             statusLabel.Text = msg;
         }
 
@@ -2942,7 +2942,7 @@ namespace AdvancedDiskAnalyzer
             }
 
             if (freedBytes > 0)
-                statusLabel.Text = "Model guncellendi. Kazanc: " + FormatSize(freedBytes);
+                statusLabel.Text = "Model güncellendi. Kazanç: " + FormatSize(freedBytes);
             RefreshModernScrollBars();
         }
 
@@ -3039,7 +3039,7 @@ namespace AdvancedDiskAnalyzer
                 if (driveTypeCache.TryGetValue(root, out cached))
                 {
                     isSSD = cached;
-                    statusLabel.Text = isSSD ? "M.2/SSD - Tam paralel mod" : "HDD - Guvenli mod";
+                    statusLabel.Text = isSSD ? "M.2/SSD - Tam paralel mod" : "HDD - Güvenli mod";
                     return;
                 }
 
@@ -3051,12 +3051,12 @@ namespace AdvancedDiskAnalyzer
                     if (mt != null && mt.Contains("SSD")) { isSSD = true; break; }
                 }
                 driveTypeCache[root] = isSSD;
-                statusLabel.Text = isSSD ? "M.2/SSD - Tam paralel mod" : "HDD - Guvenli mod";
+                statusLabel.Text = isSSD ? "M.2/SSD - Tam paralel mod" : "HDD - Güvenli mod";
             }
             catch
             {
                 isSSD = false;
-                statusLabel.Text = "Surucu tipi bilinmiyor";
+                statusLabel.Text = "Sürücü tipi bilinmiyor";
             }
         }
 
@@ -3712,7 +3712,7 @@ namespace AdvancedDiskAnalyzer
     {
         public LicensePlan Plan = LicensePlan.Free;
         public string PlanName = "Free";
-        public string Company = "Free Kullanici";
+        public string Company = "Free Kullanıcı";
         public string Email = "";
         public DateTime? Expires = null;
         public int Seats = 1;
@@ -3763,13 +3763,13 @@ namespace AdvancedDiskAnalyzer
                 {
                     if (key == null)
                     {
-                        message = "Registry yazilamadi.";
+                        message = "Registry yazılamadı.";
                         return false;
                     }
                     key.SetValue("Key", rawKey.Trim());
                     key.SetValue("InstalledAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
                 }
-                message = state.PlanName + " lisansi etkinlestirildi.";
+                message = state.PlanName + " lisansı etkinleştirildi.";
                 return true;
             }
             catch (Exception ex)
@@ -3853,7 +3853,7 @@ namespace AdvancedDiskAnalyzer
         {
             if (!HasFeature(state, LicenseFeature.CustomEula))
             {
-                message = "EULA ozellestirme Enterprise planda kullanilabilir.";
+                message = "EULA özelleştirme Enterprise planda kullanılabilir.";
                 return false;
             }
 
@@ -3863,7 +3863,7 @@ namespace AdvancedDiskAnalyzer
                 {
                     if (key == null)
                     {
-                        message = "Registry yazilamadi.";
+                        message = "Registry yazılamadı.";
                         return false;
                     }
                     key.SetValue("EnterpriseEula", text ?? "");
@@ -3881,14 +3881,14 @@ namespace AdvancedDiskAnalyzer
         private static bool Validate(string rawKey, out LicenseState state, out string message)
         {
             state = FreeState();
-            message = "Lisans gecersiz.";
+            message = "Lisans geçersiz.";
             if (string.IsNullOrEmpty(rawKey)) return false;
 
             string normalized = rawKey.Trim().Replace("\r", "").Replace("\n", "").Replace("\t", "");
             string[] parts = normalized.Split('|');
             if (parts.Length != 8 || parts[0] != "ADA1")
             {
-                message = "Lisans formati gecersiz.";
+                message = "Lisans formatı geçersiz.";
                 return false;
             }
 
@@ -3904,21 +3904,21 @@ namespace AdvancedDiskAnalyzer
                     byte[] data = Encoding.UTF8.GetBytes(payload);
                     if (!rsa.VerifyData(data, CryptoConfig.MapNameToOID("SHA256"), signature))
                     {
-                        message = "Lisans imzasi dogrulanamadi.";
+                        message = "Lisans imzası doğrulanamadı.";
                         return false;
                     }
                 }
             }
             catch
             {
-                message = "Lisans imzasi okunamadi.";
+                message = "Lisans imzası okunamadı.";
                 return false;
             }
 
             LicensePlan plan;
             if (!TryParsePlan(parts[1], out plan) || plan == LicensePlan.Free)
             {
-                message = "Lisans plani gecersiz.";
+                message = "Lisans planı geçersiz.";
                 return false;
             }
 
@@ -3928,13 +3928,13 @@ namespace AdvancedDiskAnalyzer
                 DateTime parsed;
                 if (!DateTime.TryParseExact(parts[4], "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out parsed))
                 {
-                    message = "Lisans bitis tarihi gecersiz.";
+                    message = "Lisans bitiş tarihi geçersiz.";
                     return false;
                 }
                 expires = parsed.Date;
                 if (DateTime.Now.Date > expires.Value)
                 {
-                    message = "Lisans suresi dolmus.";
+                    message = "Lisans süresi dolmus.";
                     return false;
                 }
             }
@@ -3947,14 +3947,14 @@ namespace AdvancedDiskAnalyzer
             string localHardware = GetHardwareId();
             if (hardware != "*" && !string.Equals(hardware, localHardware, StringComparison.OrdinalIgnoreCase))
             {
-                message = "Lisans bu cihaz icin uretilmemis.";
+                message = "Lisans bu cihaz icin üretilmemis.";
                 return false;
             }
 
             state = new LicenseState();
             state.Plan = plan;
             state.PlanName = PlanToName(plan);
-            state.Company = string.IsNullOrEmpty(parts[2]) ? "Kurumsal Musteri" : parts[2];
+            state.Company = string.IsNullOrEmpty(parts[2]) ? "Kurumsal Müşteri" : parts[2];
             state.Email = parts[3];
             state.Expires = expires;
             state.Seats = seats;
@@ -3994,7 +3994,7 @@ namespace AdvancedDiskAnalyzer
             LicenseState state = new LicenseState();
             state.Plan = LicensePlan.Free;
             state.PlanName = "Free";
-            state.Company = "Free Kullanici";
+            state.Company = "Free Kullanıcı";
             state.HardwareId = GetHardwareId();
             state.IsValid = false;
             state.Message = "Free plan aktif.";
@@ -4145,7 +4145,7 @@ namespace AdvancedDiskAnalyzer
                     }
                     if (string.IsNullOrEmpty(token))
                     {
-                        message = "Sunucu oturum bilgisi dondurmedi.";
+                        message = "Sunucu oturum bilgisi döndürmedi.";
                         return false;
                     }
                     return true;
@@ -4185,7 +4185,7 @@ namespace AdvancedDiskAnalyzer
 
                     if (string.IsNullOrEmpty(licenseKey))
                     {
-                        message = "Sunucu lisans anahtari dondurmedi.";
+                        message = "Sunucu lisans anahtari döndürmedi.";
                         return false;
                     }
                     return true;
@@ -4216,11 +4216,11 @@ namespace AdvancedDiskAnalyzer
                     if (serverMessage == "Account already exists")
                         return "Bu e-posta ile zaten hesap var.";
                     if (serverMessage == "Invalid email or password")
-                        return "E-posta veya sifre hatali.";
+                        return "E-posta veya şifre hatalı.";
                     if (serverMessage == "Login required")
-                        return "Oturum suresi dolmus. Lutfen tekrar giris yapin.";
+                        return "Oturum süresi dolmuş. Lütfen tekrar giriş yapın.";
                     if (serverMessage == "No license found")
-                        return "Bu hesap icin bu cihazda aktif lisans bulunamadi.";
+                        return "Bu hesap için bu cihazda aktif lisans bulunamadı.";
                     return serverMessage;
                 }
 
@@ -4230,10 +4230,10 @@ namespace AdvancedDiskAnalyzer
                     if ((int)response.StatusCode == 409)
                         return "Bu e-posta ile zaten hesap var.";
                     if ((int)response.StatusCode == 401)
-                        return "E-posta veya sifre hatali.";
+                        return "E-posta veya şifre hatalı.";
                 }
             }
-            return "Lisans sunucusuna ulasilamadi. Sunucunun calistigindan emin olun.";
+            return "Lisans sunucusuna ulaşılamadı. Sunucunun çalıştığından emin olun.";
         }
 
         private static string ReadWebExceptionBody(WebException ex)
@@ -4329,21 +4329,21 @@ namespace AdvancedDiskAnalyzer
             companyBox = FieldBox(30, 190, 480);
             this.Controls.Add(companyBox);
 
-            Label passwordLabel = FieldLabel("Sifre", 30, 226);
+            Label passwordLabel = FieldLabel("Şifre", 30, 226);
             this.Controls.Add(passwordLabel);
             passwordBox = FieldBox(30, 250, 480);
             passwordBox.PasswordChar = '*';
             this.Controls.Add(passwordBox);
 
-            Button register = AccentButton("Kayit Ol", 30, 302, 118);
+            Button register = AccentButton("Kayıt Ol", 30, 302, 118);
             register.Click += Register_Click;
             this.Controls.Add(register);
 
-            Button login = AccentButton("Giris Yap", 160, 302, 118);
+            Button login = AccentButton("Giriş Yap", 160, 302, 118);
             login.Click += Login_Click;
             this.Controls.Add(login);
 
-            Button logout = NeutralButton("Cikis", 290, 302, 88);
+            Button logout = NeutralButton("çıkıs", 290, 302, 88);
             logout.Click += delegate
             {
                 OnlineLicenseClient.ClearAccount();
@@ -4433,11 +4433,11 @@ namespace AdvancedDiskAnalyzer
                 {
                     OnlineLicenseClient.SaveAccount(email, token);
                     RefreshStatus();
-                    MessageBox.Show("Bu hesap zaten vardi; giris yapildi.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show("Bu hesap zaten vardı; giriş yapıldı.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     this.DialogResult = DialogResult.OK;
                 }
                 else
-                    MessageBox.Show("Bu e-posta ile hesap var. Sifreyi kontrol edip Giris Yap'i kullanin.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show("Bu e-posta ile hesap var. Şifreyi kontrol edip Giriş Yap'ı kullanın.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             else
                 MessageBox.Show(message, "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -4454,7 +4454,7 @@ namespace AdvancedDiskAnalyzer
             {
                 OnlineLicenseClient.SaveAccount(email, token);
                 RefreshStatus();
-                MessageBox.Show("Giris basarili.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Giriş başarılı.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 this.DialogResult = DialogResult.OK;
             }
             else
@@ -4465,12 +4465,12 @@ namespace AdvancedDiskAnalyzer
         {
             if (string.IsNullOrEmpty(email) || email.IndexOf("@") < 1)
             {
-                MessageBox.Show("Gecerli bir e-posta girin.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Geçerli bir e-posta girin.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return false;
             }
             if (string.IsNullOrEmpty(password) || password.Length < 6)
             {
-                MessageBox.Show("Sifre en az 6 karakter olmali.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Şifre en az 6 karakter olmalı.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return false;
             }
             return true;
@@ -4496,7 +4496,7 @@ namespace AdvancedDiskAnalyzer
     {
         public UpgradeForm(LicenseState current, LicenseFeature feature, string title, string purchaseUrl, string enterpriseUrl)
         {
-            this.Text = "Ozellik Kilitli";
+            this.Text = "Özellik Kilitli";
             this.Size = new Size(520, 280);
             this.StartPosition = FormStartPosition.CenterParent;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -4514,7 +4514,7 @@ namespace AdvancedDiskAnalyzer
 
             Label body = new Label();
             body.Text = "Mevcut plan: " + (current == null ? "Free" : current.PlanName) +
-                "\n\nPro: PDF rapor\nEnterprise: ag surucusu, toplu silme, kurumsal EULA";
+                "\n\nPro: PDF rapor\nEnterprise: ağ sürücüsü, toplu silme, kurumsal EULA";
             body.Font = new Font("Segoe UI", 9);
             body.Location = new Point(26, 70);
             body.Size = new Size(450, 78);
@@ -4522,7 +4522,7 @@ namespace AdvancedDiskAnalyzer
             this.Controls.Add(body);
 
             Button buy = new Button();
-            buy.Text = "Planlari Ac";
+            buy.Text = "Planları Aç";
             buy.Location = new Point(26, 170);
             buy.Size = new Size(170, 34);
             buy.BackColor = Theme.Accent;
@@ -4624,9 +4624,9 @@ namespace AdvancedDiskAnalyzer
             accountLabel.ForeColor = Theme.SubText;
             this.Controls.Add(accountLabel);
 
-            AddPlanColumn(30, 104, "Free", "Temel analiz\nTreemap\nKopya gorunumu\nCSV export");
-            AddPlanColumn(286, 104, "Pro", "Free ozellikleri\nPDF rapor\nProfesyonel cikti\nOffline lisans");
-            AddPlanColumn(542, 104, "Enterprise", "Pro ozellikleri\nAg surucusu\nToplu silme\nKurumsal EULA");
+            AddPlanColumn(30, 104, "Free", "Temel analiz\nTreemap\nKopya görünümü\nCSV export");
+            AddPlanColumn(286, 104, "Pro", "Free özellikleri\nPDF rapor\nProfesyonel çıktı\nOffline lisans");
+            AddPlanColumn(542, 104, "Enterprise", "Pro özellikleri\nAğ sürücüsü\nToplu silme\nKurumsal EULA");
 
             Label hardware = new Label();
             hardware.Text = "Cihaz ID: " + LicenseManager.GetHardwareId();
@@ -4674,12 +4674,12 @@ namespace AdvancedDiskAnalyzer
             companyBox.Font = new Font("Segoe UI", 9);
             companyBox.BackColor = Theme.Card;
             companyBox.ForeColor = Theme.Text;
-            companyBox.Text = current.Company == "Free Kullanici" ? "" : current.Company;
+            companyBox.Text = current.Company == "Free Kullanıcı" ? "" : current.Company;
             companyBox.Visible = false;
             this.Controls.Add(companyBox);
 
             Label passwordLabel = new Label();
-            passwordLabel.Text = "Sifre";
+            passwordLabel.Text = "Şifre";
             passwordLabel.Location = new Point(498, 284);
             passwordLabel.Size = new Size(120, 18);
             passwordLabel.Font = new Font("Segoe UI", 8, FontStyle.Bold);
@@ -4708,7 +4708,7 @@ namespace AdvancedDiskAnalyzer
             this.Controls.Add(serverBox);
 
             Label keyLabel = new Label();
-            keyLabel.Text = "Lisans anahtari";
+            keyLabel.Text = "Lisans anahtarı";
             keyLabel.Location = new Point(32, 286);
             keyLabel.Size = new Size(200, 20);
             keyLabel.Font = new Font("Segoe UI", 9, FontStyle.Bold);
@@ -4734,7 +4734,7 @@ namespace AdvancedDiskAnalyzer
             login.Click += delegate { OnlineCheckout("PRO"); };
             this.Controls.Add(login);
 
-            Button activate = SmallButton("Key Etkinlestir", 276, 402, 120);
+            Button activate = SmallButton("Key Etkinleştir", 276, 402, 120);
             activate.Click += Activate_Click;
             this.Controls.Add(activate);
 
@@ -4890,20 +4890,20 @@ namespace AdvancedDiskAnalyzer
             if (OnlineLicenseClient.Register(serverBox.Text.Trim(), email, company, password, out token, out message))
             {
                 OnlineLicenseClient.SaveAccount(email, token);
-                accountLabel.Text = "Oturum acik: " + email;
+                accountLabel.Text = "Oturum açık: " + email;
                 companyBox.Text = company;
-                MessageBox.Show("Hesap olusturuldu ve giris yapildi.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Hesap oluşturuldu ve giriş yapıldı.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             else if (OnlineLicenseClient.IsAccountAlreadyExists(message))
             {
                 if (OnlineLicenseClient.Login(serverBox.Text.Trim(), email, password, out token, out message))
                 {
                     OnlineLicenseClient.SaveAccount(email, token);
-                    accountLabel.Text = "Oturum acik: " + email;
-                    MessageBox.Show("Bu hesap zaten vardi; giris yapildi.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    accountLabel.Text = "Oturum açık: " + email;
+                    MessageBox.Show("Bu hesap zaten vardı; giriş yapıldı.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 else
-                    MessageBox.Show("Bu e-posta ile hesap var. Sifreyi kontrol edip Giris Yap'i kullanin.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show("Bu e-posta ile hesap var. Şifreyi kontrol edip Giriş Yap'ı kullanın.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             else
                 MessageBox.Show(message, "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -4919,8 +4919,8 @@ namespace AdvancedDiskAnalyzer
             if (OnlineLicenseClient.Login(serverBox.Text.Trim(), email, password, out token, out message))
             {
                 OnlineLicenseClient.SaveAccount(email, token);
-                accountLabel.Text = "Oturum acik: " + email;
-                MessageBox.Show("Giris basarili.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                accountLabel.Text = "Oturum açık: " + email;
+                MessageBox.Show("Giriş başarılı.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             else
                 MessageBox.Show(message, "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -4930,12 +4930,12 @@ namespace AdvancedDiskAnalyzer
         {
             if (string.IsNullOrEmpty(email) || email.IndexOf("@") < 1)
             {
-                MessageBox.Show("Gecerli bir e-posta girin.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Geçerli bir e-posta girin.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return false;
             }
             if (string.IsNullOrEmpty(password) || password.Length < 6)
             {
-                MessageBox.Show("Sifre en az 6 karakter olmali.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Şifre en az 6 karakter olmalı.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return false;
             }
             return true;
@@ -4950,7 +4950,7 @@ namespace AdvancedDiskAnalyzer
             if (!string.IsNullOrEmpty(token) && !string.IsNullOrEmpty(email))
                 return true;
 
-            MessageBox.Show("Once Kayit Ol veya Giris Yap ile hesabini ac.", "Hesap gerekli", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show("Önce Kayıt Ol veya Giriş Yap ile hesabını aç.", "Hesap gerekli", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return false;
         }
 
@@ -5032,19 +5032,19 @@ namespace AdvancedDiskAnalyzer
         private void RefreshStatus()
         {
             string expires = current.Expires.HasValue ? current.Expires.Value.ToString("yyyy-MM-dd") : "Perpetual";
-            statusLabel.Text = "Plan: " + current.PlanName + "  |  Firma: " + current.Company + "  |  Bitis: " + expires;
+            statusLabel.Text = "Plan: " + current.PlanName + "  |  Firma: " + current.Company + "  |  Bitiş: " + expires;
             statusLabel.ForeColor = LicenseManager.HasPaidPlan(current) ? Theme.Success : Theme.SubText;
             string savedEmail = OnlineLicenseClient.GetSavedEmail();
             if (accountLabel != null)
-                accountLabel.Text = string.IsNullOrEmpty(savedEmail) ? "Hesap yok" : "Oturum acik: " + savedEmail;
+                accountLabel.Text = string.IsNullOrEmpty(savedEmail) ? "Hesap yok" : "Oturum açık: " + savedEmail;
         }
 
         private void OpenUrl(string url)
         {
             try { Process.Start(url); }
-            catch (Exception ex) { MessageBox.Show(ex.Message, "Baglanti", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            catch (Exception ex) { MessageBox.Show(ex.Message, "Bağlantı", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         }
-    }
+
 
     public class PromptForm : Form
     {
@@ -5097,7 +5097,7 @@ namespace AdvancedDiskAnalyzer
             this.Controls.Add(ok);
 
             Button cancel = new Button();
-            cancel.Text = "Iptal";
+            cancel.Text = "İptal";
             cancel.Location = new Point(386, 94);
             cancel.Size = new Size(96, 32);
             cancel.BackColor = Theme.Card;
@@ -5138,7 +5138,7 @@ namespace AdvancedDiskAnalyzer
             this.Controls.Add(title);
 
             Label subtitle = new Label();
-            subtitle.Text = "EULA / Gizlilik Guvencesi";
+            subtitle.Text = "EULA / Gizlilik Güvencesi";
             subtitle.Font = new Font("Segoe UI", 10, FontStyle.Bold);
             subtitle.Location = new Point(30, 64);
             subtitle.Size = new Size(480, 24);
@@ -5148,9 +5148,10 @@ namespace AdvancedDiskAnalyzer
             string[] lines = string.IsNullOrEmpty(customEulaText)
                 ? new string[]
             {
-                "- Bu yazilim tamamen cevrimdisi calisir.",
-                "- Hicbir dosya adi, boyut veya icerik dis sunuculara gonderilmez.",
-                "- Gelistirici hicbir kullanici verisine erisemez."
+                "- Bu yazilim tamamen çevrimdışı çalışır.",
+                "- Hiçbir dosya adı, boyut veya içerik dış sunuculara gönderilmez.",
+                "- Geliştirici hiçbir kullanıcı verisine erişemez."
+                "- Açık kaynak kodlu bir yazılım olduğundan dolayı bunların hepsi kontrol edilebilir.
             }
                 : customEulaText.Replace("\r", "").Split('\n');
 
@@ -5169,7 +5170,7 @@ namespace AdvancedDiskAnalyzer
             }
 
             Label stamp = new Label();
-            stamp.Text = "Surum: " + version + "  |  Metin tarihi: " + stampDate;
+            stamp.Text = "Sürüm: " + version + "  |  Metin tarihi: " + stampDate;
             stamp.Font = new Font("Segoe UI", 9);
             stamp.Location = new Point(34, 232);
             stamp.Size = new Size(480, 22);
@@ -5251,18 +5252,18 @@ namespace AdvancedDiskAnalyzer
 
             StartPage("Advanced Disk Analyzer Raporu");
             WriteLine("Rapor tarihi: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), 10, false);
-            WriteLine("Tarama klasoru: " + scanPath, 10, false);
+            WriteLine("Tarama klasörü: " + scanPath, 10, false);
             WriteLine("Toplam boyut: " + FormatSize(root.Size), 10, false);
-            WriteLine("Dosya sayisi: " + string.Format("{0:N0}", allFiles.Count), 10, false);
+            WriteLine("Dosya sayısı: " + string.Format("{0:N0}", allFiles.Count), 10, false);
             WriteLine("Temizlenebilir alan: " + FormatSize(deletableSize), 10, false);
             if (isNetworkDrive)
-                WriteLine("Ag surucusu / sunucu: " + networkInfo, 10, true);
+                WriteLine("Ağ sürücüsü / sunucu: " + networkInfo, 10, true);
 
             AddChart();
-            AddFileTable("En Buyuk Dosyalar", topLargest, "Dosya bulunamadi.");
-            AddFileTable("Silinebilecek Dosyalar", deletable.Take(30).ToList(), "Silinebilecek dosya bulunamadi.");
-            AddFileTable("Buyuk ve Eski Dosyalar", bigOld.Take(30).ToList(), "Buyuk ve eski dosya bulunamadi.");
-            AddFileTable("Olasi Kopyalar", duplicateFiles.Take(45).ToList(), "Olasi kopya bulunamadi.");
+            AddFileTable("En Büyük Dosyalar", topLargest, "Dosya bulunamadı.");
+            AddFileTable("Silinebilecek Dosyalar", deletable.Take(30).ToList(), "Silinebilecek dosya bulunamadı.");
+            AddFileTable("Büyük ve Eski Dosyalar", bigOld.Take(30).ToList(), "Büyük ve eski dosya bulunamadı.");
+            AddFileTable("Olası Kopyalar", duplicateFiles.Take(45).ToList(), "Olası kopya bulunamadı.");
             AddDirectoryTable("En Buyuk Klasorler", bigDirs, root.Size);
         }
 
@@ -5401,7 +5402,7 @@ namespace AdvancedDiskAnalyzer
 
             EnsureSpace(22);
             DrawFilledRect(Margin, y - 5, PageWidth - Margin * 2, 16, "0.93 0.94 0.97");
-            DrawTextAt(44, y, "Klasor", 8, true);
+            DrawTextAt(44, y, "Klasör", 8, true);
             DrawTextAt(305, y, "Boyut", 8, true);
             DrawTextAt(395, y, "Oran", 8, true);
             DrawTextAt(455, y, "Konum", 8, true);
