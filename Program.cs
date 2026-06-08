@@ -1,5 +1,23 @@
-// Advanced Disk Analyzer v1.7 - Modern Edition
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADVANCED DISK ANALYZER v2.0
+// ═══════════════════════════════════════════════════════════════════════════════
+// Dosya    : Program.cs (~7800 satır)
+// Amaç     : Windows masaüstü disk analiz uygulamasının tüm kaynak kodu.
+//            Tarama motorları, görselleştirme (pasta grafik, treemap), skor
+//            bazlı analiz, lisans yönetimi ve kullanıcı arayüzünü içerir.
+// Derleme  : .NET Framework 4.0, C# 5 (csc.exe ile tek dosya derleme)
+// Bağımlılık: Harici kütüphane yok — tüm bileşenler bu dosyada tanımlı.
+//            System.Windows.Forms, System.Drawing, System.Management referansları.
+// Mimari   : Tek dosyalı monolitik yapı. Sınıflar mantıksal bölümlere ayrılmış:
+//            Theme → MainForm → Tarama → Görselleştirme → Lisans → Veri Modelleri
+// ═══════════════════════════════════════════════════════════════════════════════
 
+// ── Dış Bağımlılıklar ──────────────────────────────────────────────────────────
+// Standart .NET Framework 4.0 kütüphaneleri. Üçüncü parti paket kullanılmaz.
+// System.Management: WMI sorguları ile SSD/HDD tespiti ve ağ sürücüsü bilgisi
+// System.Runtime.InteropServices: Win32 API P/Invoke çağrıları (FindFirstFile vb.)
+// System.Security.Cryptography: RSA lisans imzalama ve PBKDF2 parola hash
+// ────────────────────────────────────────────────────────────────────────────────
 using System;
 using System.IO;
 using System.Linq;
@@ -12,19 +30,34 @@ using System.Threading;
 using System.Management;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using System.Text;
 using System.Globalization;
 using System.Drawing.Imaging;
 using Microsoft.Win32;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Net;
 using System.Collections.Specialized;
+using System.Collections.Concurrent;
 
 namespace AdvancedDiskAnalyzer
 {
+    // ═══════════════════════════════════════════════════════════════════
+    // BÖLÜM: TEMA SİSTEMİ (Theme + DarkMenuColorTable)
+    // ═══════════════════════════════════════════════════════════════════
+    // Amacı  : Koyu ve açık tema renk paletlerini merkezi olarak yönetir.
+    //          Tüm UI bileşenleri renk değerlerini bu sınıftan alır.
+    // Yöntemi: IsDark bayrağına göre koşullu property'ler (getter)
+    //          ilgili paletten renk döndürür. Tema değişiminde tüm
+    //          kontroller ApplyTheme() ile yeniden boyanır.
+    // Notlar : Renk paleti el ile seçilmiş HSL değerlerinden oluşur.
+    //          Arkaplan → Yüzey → Kart → Kenarlık → Metin şeklinde
+    //          katmanlı hiyerarşi uygulanır (elevation pattern).
+    // ═══════════════════════════════════════════════════════════════════
     public static class Theme
     {
-        public static bool IsDark = true;
+        public static bool IsDark = true;  // Varsayılan: koyu tema
 
         public static Color DarkBg        = Color.FromArgb(12, 16, 23);
         public static Color DarkSurface   = Color.FromArgb(20, 25, 33);
@@ -44,12 +77,12 @@ namespace AdvancedDiskAnalyzer
         public static Color LightCard      = Color.FromArgb(240, 243, 248);
         public static Color LightBorder    = Color.FromArgb(210, 216, 226);
         public static Color LightText      = Color.FromArgb(18, 18, 38);
-        public static Color LightSubText   = Color.FromArgb(88, 88, 128);
-        public static Color LightAccent    = Color.FromArgb(38, 104, 190);
-        public static Color LightAccent2   = Color.FromArgb(92, 105, 135);
-        public static Color LightSuccess   = Color.FromArgb(28, 155, 85);
-        public static Color LightDanger    = Color.FromArgb(205, 38, 58);
-        public static Color LightWarning   = Color.FromArgb(195, 125, 0);
+        public static Color LightSubText   = Color.FromArgb(70, 80, 95);      // Daha koyu, yüksek kontrastlı alt metin rengi
+        public static Color LightAccent    = Color.FromArgb(20, 85, 170);     // Daha zengin ve okunabilir mavi accent
+        public static Color LightAccent2   = Color.FromArgb(64, 78, 104);     // Daha koyu ikincil mavi/gri
+        public static Color LightSuccess   = Color.FromArgb(16, 124, 65);     // Beyaz zemin üzerinde yüksek kontrastlı yeşil (AA standartlarına uygun)
+        public static Color LightDanger    = Color.FromArgb(186, 12, 47);     // Beyaz zemin üzerinde yüksek kontrastlı kırmızı (AA standartlarına uygun)
+        public static Color LightWarning   = Color.FromArgb(150, 80, 0);      // Beyaz zemin üzerinde yüksek kontrastlı turuncu/kahverengi (AA standartlarına uygun)
         public static Color LightHighlight = Color.FromArgb(208, 222, 255);
 
         public static Color Bg        { get { return IsDark ? DarkBg        : LightBg;        } }
@@ -87,6 +120,14 @@ namespace AdvancedDiskAnalyzer
         public override Color ToolStripGradientEnd { get { return Theme.Surface; } }
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // BÖLÜM: UYGULAMA İKONU FABRİKASI
+    // ═══════════════════════════════════════════════════════════════════
+    // Amacı  : EXE'den gömülü ikonu çıkartır ve önbelleğe alır.
+    // Yöntemi: Icon.ExtractAssociatedIcon ile çalışan EXE'nin ikonunu
+    //          okur. Başarısız olursa SystemIcons.Application kullanır.
+    //          Sonuç cachedIcon'da tutulur — tekrar disk I/O yapılmaz.
+    // ═══════════════════════════════════════════════════════════════════
     public static class AppIconFactory
     {
         private static Icon cachedIcon;
@@ -110,8 +151,32 @@ namespace AdvancedDiskAnalyzer
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // BÖLÜM: ANA FORM (MainForm)
+    // ═══════════════════════════════════════════════════════════════════
+    // Amacı  : Uygulamanın tek ana penceresi. Tüm kullanıcı etkileşimi,
+    //          tarama kontrolü, görselleştirme ve veri yönetimi buradadır.
+    // İçerik : ~4000 satır — UI oluşturma, tarama motoru, canlı liste,
+    //          pasta grafik, treemap, skor analizi, CSV/PDF dışa aktarım,
+    //          tema yönetimi, lisans kontrolü, sağ tık menüsü.
+    // Yapı   : Metotlar mantıksal bölüm başlıkları ile gruplanmıştır.
+    // ═══════════════════════════════════════════════════════════════════
     public class MainForm : Form
     {
+        // ── Tarama Modu Seçenekleri ──
+        // NtfsTurbo : Ham MFT okuma (en hızlı, yönetici yetkisi gerekir)
+        // FastWinApi: Win32 FindFirstFile ile paralel tarama
+        // Normal    : Sıralı tarama, tam canlı liste gösterimi
+        private enum ScanMode
+        {
+            NtfsTurbo,
+            FastWinApi,
+            Normal
+        }
+
+        // ── UI Kontrolleri ──────────────────────────────────────────────
+        // Ana pencere düzeni: Sol panel (TreeView) | Orta (ListView) | Sağ (TabControl)
+        // Toolbar üstte, durum çubuğu altta, ilerleme çubuğu en altta
         private TreeView treeView;
         private ListView listView;
         private Panel treeHost;
@@ -124,6 +189,9 @@ namespace AdvancedDiskAnalyzer
         private Panel listNativeHorizontalMask;
         private MenuStrip mainMenu;
         private ToolStripMenuItem ultraFastScanMenuItem;
+        private ToolStripMenuItem ntfsTurboMenuItem;
+        private ToolStripMenuItem allocatedSizeMenuItem;
+        private ToolStripMenuItem hardLinkAccuracyMenuItem;
         private Panel toolbarPanel;
         private Panel piePanel;
         private Panel treemapPanel;
@@ -132,6 +200,8 @@ namespace AdvancedDiskAnalyzer
         private TabControl tabControl;
         private ProgressBar progressBar;
         private Button scanButton;
+        private Button scanOptionsButton;
+        private ContextMenuStrip scanModeMenu;
         private Button themeButton;
         private Label filterLabel;
         private TextBox filterBox;
@@ -156,27 +226,38 @@ namespace AdvancedDiskAnalyzer
         private Panel statsBar;
         private Label statTotal, statFiles, statTime;
 
-        // Ag surucusu bilgisi
+        // Ağ sürücüsü bilgisi
         private bool isNetworkDrive = false;
         private string networkDriveInfo = "";
 
-        // Ag surucusu bilgi banner'i
+        // Ağ sürücüsü bilgi banner'ı
         private Panel networkBanner;
         private Label networkBannerLabel;
 
+        // ── Tarama Motoru Durum Değişkenleri ─────────────────────────────
+        // scoringModel    : Dosya gereksizlik skorunu hesaplayan ağırlıklı formül
+        // isSSD           : WMI ile tespit edilen sürücü tipi (parallelism ayarı için)
+        // driveTypeCache  : Sürücü harfi → SSD/HDD eşlemesi (tekrar WMI sorgusu önlenir)
+        // clusterSizeCache: Sürücü kökü → cluster boyutu (GetDiskFreeSpace sonucu)
+        // countedHardLinks: Hard link FileID takibi — aynı dosyanın çift sayılmasını önler
         private AdaptiveScoringModel scoringModel = new AdaptiveScoringModel();
         private bool isSSD = false;
         private Dictionary<string, bool> driveTypeCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, long> clusterSizeCache = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        private object clusterSizeLock = new object();
+        private ConcurrentDictionary<string, byte> countedHardLinks = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
         private DirectoryNode rootNode = null;
         private int totalFilesFound = 0;
         private long totalBytesScanned = 0;
+        private long totalAllocatedScanned = 0;
+        private int duplicateHardLinksSkipped = 0;
         private System.Windows.Forms.Timer uiTimer;
         private System.Windows.Forms.Timer filterTimer;
 
         private readonly object queueLock = new object();
         private Queue<FileNode> pendingFiles = new Queue<FileNode>();
         private int liveQueued = 0;
-        private bool liveListLimited = false;
+        private volatile bool liveListLimited = false;
         private int liveUiTicks = 0;
 
         private int hoveredSlice = -1;
@@ -195,10 +276,16 @@ namespace AdvancedDiskAnalyzer
         private LicenseState currentLicense;
         private CancellationTokenSource scanCancelSource = null;
         private bool scanInProgress = false;
+        private ScanMode selectedScanMode = ScanMode.NtfsTurbo;
         private bool ultraFastMode = true;
+        private bool ntfsTurboMode = true;
+        private volatile string lastScanEngine = "WinAPI";
+        private volatile string lastTurboMessage = "";
         private DateTime scoreOldFileThreshold = DateTime.Now.AddYears(-1);
+        private bool allocatedSizeEnabled = true;
+        private bool hardLinkAccuracyEnabled = true;
 
-        private const string AppVersion = "v1.7 Beta";
+        private const string AppVersion = "v2.0";
         private const string EulaRegistryPath = @"Software\AdvancedDiskAnalyzer";
         private const string EulaStampDate = "2026-05-07";
         private const string PurchaseUrl = "https://advanced-disk-analyzer.com/pricing";
@@ -206,9 +293,12 @@ namespace AdvancedDiskAnalyzer
         private const int LiveListItemLimit = 4000;
         private const int UltraLiveListItemLimit = 1600;
         private const int DisplayFileLimit = 10000;
+        private const long UltraFastHardLinkMinBytes = 16L * 1024L * 1024L;
+        private const int TurboCompactRecordThreshold = 300000;
+        private const long TurboMaterializeMinBytes = 16L * 1024L * 1024L;
         private readonly string[] listColumnTitles = new string[]
         {
-            "Dosya Adı", "Boyut", "Skor", "Tarih", "Tur", "Konum"
+            "Dosya Adı", "Boyut", "Diskte", "Skor", "Tarih", "Tür", "Konum"
         };
 
         public MainForm()
@@ -255,10 +345,10 @@ namespace AdvancedDiskAnalyzer
             topFilesButton.Left = duplicatesButton.Left - topFilesButton.Width - 10;
             topFilesButton.Top = y;
 
-            filterLabel.Left = 28;
+            filterLabel.Left = 24;
             filterLabel.Top = 26;
-            filterBox.Left = 68;
-            filterBox.Top = 21;
+            filterBox.Left = 82;
+            filterBox.Top = 20;
             filterBox.Width = Math.Max(180, topFilesButton.Left - filterBox.Left - 20);
 
             statusLabel.Left = 28;
@@ -281,20 +371,20 @@ namespace AdvancedDiskAnalyzer
             ToolStripMenuItem file = MenuRoot("Dosya");
             file.DropDownItems.Add(MenuCommand("Klasör Tara...", ScanButton_Click, Keys.Control | Keys.O));
             file.DropDownItems.Add(new ToolStripSeparator());
-            file.DropDownItems.Add(MenuCommand("CSV Dısarı Aktar", CsvButton_Click, Keys.Control | Keys.E));
+            file.DropDownItems.Add(MenuCommand("CSV Dışarı Aktar", CsvButton_Click, Keys.Control | Keys.E));
             file.DropDownItems.Add(MenuCommand("PDF Rapor Al", PdfReportBtn_Click, Keys.Control | Keys.P));
             file.DropDownItems.Add(new ToolStripSeparator());
-            file.DropDownItems.Add(MenuCommand("çıkış", delegate { this.Close(); }, Keys.Alt | Keys.F4));
+            file.DropDownItems.Add(MenuCommand("Çıkış", delegate { this.Close(); }, Keys.Alt | Keys.F4));
 
             ToolStripMenuItem view = MenuRoot("Görünüm");
             view.DropDownItems.Add(MenuCommand("Grafik Paneli", delegate { tabControl.SelectedIndex = 0; }, Keys.Control | Keys.D1));
             view.DropDownItems.Add(MenuCommand("Treemap Paneli", delegate { tabControl.SelectedIndex = 1; }, Keys.Control | Keys.D2));
-            view.DropDownItems.Add(MenuCommand("AI öneriler", delegate { tabControl.SelectedIndex = 2; }, Keys.Control | Keys.D3));
+            view.DropDownItems.Add(MenuCommand("AI Öneriler", delegate { tabControl.SelectedIndex = 2; }, Keys.Control | Keys.D3));
             view.DropDownItems.Add(new ToolStripSeparator());
             view.DropDownItems.Add(MenuCommand("Temayı Değiştir", ThemeButton_Click, Keys.Control | Keys.T));
 
             ToolStripMenuItem tools = MenuRoot("Araçlar");
-            tools.DropDownItems.Add(MenuCommand("Top 100 Büyük Dosya", TopFilesButton_Click, Keys.F6));
+            tools.DropDownItems.Add(MenuCommand("En Büyük 100 Dosya", TopFilesButton_Click, Keys.F6));
             tools.DropDownItems.Add(MenuCommand("Kopyaları Bul", DuplicatesButton_Click, Keys.F7));
             tools.DropDownItems.Add(MenuCommand("Listeyi Yenile", delegate { RefreshCurrentView(); }, Keys.F5));
             tools.DropDownItems.Add(new ToolStripSeparator());
@@ -303,7 +393,25 @@ namespace AdvancedDiskAnalyzer
             ultraFastScanMenuItem.Checked = ultraFastMode;
             ultraFastScanMenuItem.CheckedChanged += ToggleUltraFastScan_Click;
             tools.DropDownItems.Add(ultraFastScanMenuItem);
+            ntfsTurboMenuItem = MenuCommand("NTFS Turbo (MFT Beta)", delegate { }, Keys.Control | Keys.M);
+            ntfsTurboMenuItem.CheckOnClick = true;
+            ntfsTurboMenuItem.Checked = ntfsTurboMode;
+            ntfsTurboMenuItem.CheckedChanged += ToggleNtfsTurbo_Click;
+            tools.DropDownItems.Add(ntfsTurboMenuItem);
+            tools.DropDownItems.Add(MenuCommand("Yönetici Olarak Yeniden Başlat", RestartAsAdmin_Click, Keys.Control | Keys.Shift | Keys.A));
+            allocatedSizeMenuItem = MenuCommand("Diskte Kaplanan Alanı Ölç", delegate { }, Keys.None);
+            allocatedSizeMenuItem.CheckOnClick = true;
+            allocatedSizeMenuItem.Checked = allocatedSizeEnabled;
+            allocatedSizeMenuItem.CheckedChanged += ToggleAllocatedSize_Click;
+            tools.DropDownItems.Add(allocatedSizeMenuItem);
+            hardLinkAccuracyMenuItem = MenuCommand("Hard Link Çift Sayımı Önle", delegate { }, Keys.None);
+            hardLinkAccuracyMenuItem.CheckOnClick = true;
+            hardLinkAccuracyMenuItem.Checked = hardLinkAccuracyEnabled;
+            hardLinkAccuracyMenuItem.CheckedChanged += ToggleHardLinkAccuracy_Click;
+            tools.DropDownItems.Add(hardLinkAccuracyMenuItem);
+            tools.DropDownItems.Add(new ToolStripSeparator());
             tools.DropDownItems.Add(MenuCommand("Tarama Geçmişini Aç", OpenScanHistory_Click, Keys.Control | Keys.G));
+            tools.DropDownItems.Add(MenuCommand("Snapshot Geçmişini Aç", OpenSnapshotHistory_Click, Keys.Control | Keys.Shift | Keys.G));
 
             ToolStripMenuItem license = MenuRoot("Lisans");
             license.DropDownItems.Add(MenuCommand("Hesap...", AccountButton_Click, Keys.Control | Keys.H));
@@ -324,9 +432,88 @@ namespace AdvancedDiskAnalyzer
         private void ToggleUltraFastScan_Click(object sender, EventArgs e)
         {
             ultraFastMode = ultraFastScanMenuItem == null || ultraFastScanMenuItem.Checked;
+            if (!ntfsTurboMode)
+                selectedScanMode = ultraFastMode ? ScanMode.FastWinApi : ScanMode.Normal;
+            UpdateScanModeMenuChecks();
             statusLabel.Text = ultraFastMode
-                ? "Ultra hızlı tarama açık: UI akışı sınırlı, tarama öncelikli."
+                ? "Ultra hızlı tarama açık: UI akışı sınırlı, hard link kontrolü büyük dosyalarda adaptif."
                 : "Standart tarama açık: daha fazla canlı liste gösterilir.";
+        }
+
+        private void ToggleNtfsTurbo_Click(object sender, EventArgs e)
+        {
+            ntfsTurboMode = ntfsTurboMenuItem == null || ntfsTurboMenuItem.Checked;
+            selectedScanMode = ntfsTurboMode ? ScanMode.NtfsTurbo : (ultraFastMode ? ScanMode.FastWinApi : ScanMode.Normal);
+            UpdateScanModeMenuChecks();
+            statusLabel.Text = ntfsTurboMode
+                ? "NTFS Turbo açık: yerel NTFS disklerde ham MFT okunur, destek yoksa güvenli taramaya düşer."
+                : "NTFS Turbo kapalı: güvenli WinAPI tarama kullanılır.";
+        }
+
+        private void RestartAsAdmin_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if (IsRunningAsAdministrator())
+                {
+                    MessageBox.Show("Uygulama zaten yönetici yetkisiyle çalışıyor.", "Yönetici Yetkisi",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                ProcessStartInfo info = new ProcessStartInfo(Application.ExecutablePath);
+                info.UseShellExecute = true;
+                info.Verb = "runas";
+                Process.Start(info);
+                this.Close();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Yönetici olarak yeniden başlatılamadı:\n" + ex.Message,
+                    "Yönetici Yetkisi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private bool IsRunningAsAdministrator()
+        {
+            try
+            {
+                WindowsIdentity identity = WindowsIdentity.GetCurrent();
+                WindowsPrincipal principal = new WindowsPrincipal(identity);
+                return principal.IsInRole(WindowsBuiltInRole.Administrator);
+            }
+            catch { return false; }
+        }
+
+        private bool ShouldOfferAdminRestartForTurbo(string path)
+        {
+            if (!ntfsTurboMode || isNetworkDrive || IsRunningAsAdministrator())
+                return false;
+            try
+            {
+                string root = PathText.GetRoot(path);
+                if (string.IsNullOrEmpty(root) || root.Length < 2 || root[1] != ':')
+                    return false;
+                DriveInfo drive = new DriveInfo(root);
+                return string.Equals(drive.DriveFormat, "NTFS", StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
+        private void ToggleAllocatedSize_Click(object sender, EventArgs e)
+        {
+            allocatedSizeEnabled = allocatedSizeMenuItem == null || allocatedSizeMenuItem.Checked;
+            statusLabel.Text = allocatedSizeEnabled
+                ? "Diskte kaplanan alan hesabı açık."
+                : "Diskte alan hesabı kapalı: tarama daha sade ve hızlı çalışır.";
+        }
+
+        private void ToggleHardLinkAccuracy_Click(object sender, EventArgs e)
+        {
+            hardLinkAccuracyEnabled = hardLinkAccuracyMenuItem == null || hardLinkAccuracyMenuItem.Checked;
+            statusLabel.Text = hardLinkAccuracyEnabled
+                ? "Hard link çift sayım koruması açık."
+                : "Hard link koruması kapalı: en hızlı ham listeleme yapılır.";
         }
 
         private ToolStripMenuItem MenuRoot(string text)
@@ -346,6 +533,97 @@ namespace AdvancedDiskAnalyzer
             item.ShowShortcutKeys = shortcut != Keys.None;
             item.Click += handler;
             return item;
+        }
+
+        private ContextMenuStrip BuildScanModeMenu()
+        {
+            ContextMenuStrip menu = new ContextMenuStrip();
+            menu.RenderMode = ToolStripRenderMode.Professional;
+            menu.Renderer = new ToolStripProfessionalRenderer(new DarkMenuColorTable());
+            menu.Items.Add(CreateScanModeItem("NTFS Turbo Tarama (en hızlı)", ScanMode.NtfsTurbo));
+            menu.Items.Add(CreateScanModeItem("Hızlı Tarama (yönetici gerekmez)", ScanMode.FastWinApi));
+            menu.Items.Add(CreateScanModeItem("Normal Tarama (tam liste)", ScanMode.Normal));
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(MenuCommand("Yönetici Olarak Yeniden Başlat", RestartAsAdmin_Click, Keys.None));
+            menu.Opening += delegate { UpdateScanModeMenuChecks(); };
+            return menu;
+        }
+
+        private ToolStripMenuItem CreateScanModeItem(string text, ScanMode mode)
+        {
+            ToolStripMenuItem item = MenuCommand(text, ScanModeMenuItem_Click, Keys.None);
+            item.Tag = mode;
+            item.CheckOnClick = false;
+            return item;
+        }
+
+        private void ScanOptionsButton_Click(object sender, EventArgs e)
+        {
+            if (scanModeMenu == null || scanOptionsButton == null || scanInProgress) return;
+            UpdateScanModeMenuChecks();
+            scanModeMenu.Show(scanOptionsButton, new Point(0, scanOptionsButton.Height));
+        }
+
+        private void ScanModeMenuItem_Click(object sender, EventArgs e)
+        {
+            ToolStripMenuItem item = sender as ToolStripMenuItem;
+            if (item == null || !(item.Tag is ScanMode)) return;
+            selectedScanMode = (ScanMode)item.Tag;
+            ApplySelectedScanMode();
+            UpdateScanModeMenuChecks();
+            if (!scanInProgress)
+                ScanButton_Click(scanButton, EventArgs.Empty);
+        }
+
+        private void UpdateScanModeMenuChecks()
+        {
+            if (scanModeMenu == null) return;
+            foreach (ToolStripItem raw in scanModeMenu.Items)
+            {
+                ToolStripMenuItem item = raw as ToolStripMenuItem;
+                if (item == null || !(item.Tag is ScanMode)) continue;
+                item.Checked = (ScanMode)item.Tag == selectedScanMode;
+                item.BackColor = item.Checked ? Theme.Highlight : Theme.Card;
+                item.ForeColor = item.Checked ? Theme.Text : Theme.SubText;
+            }
+        }
+
+        private void ApplySelectedScanMode()
+        {
+            if (selectedScanMode == ScanMode.NtfsTurbo)
+            {
+                ntfsTurboMode = true;
+                ultraFastMode = true;
+            }
+            else if (selectedScanMode == ScanMode.FastWinApi)
+            {
+                ntfsTurboMode = false;
+                ultraFastMode = true;
+            }
+            else
+            {
+                ntfsTurboMode = false;
+                ultraFastMode = false;
+            }
+
+            SyncAdvancedScanToggles();
+            if (!scanInProgress && statusLabel != null)
+                statusLabel.Text = "Tarama modu: " + GetScanModeLabel(selectedScanMode);
+        }
+
+        private void SyncAdvancedScanToggles()
+        {
+            if (ultraFastScanMenuItem != null && ultraFastScanMenuItem.Checked != ultraFastMode)
+                ultraFastScanMenuItem.Checked = ultraFastMode;
+            if (ntfsTurboMenuItem != null && ntfsTurboMenuItem.Checked != ntfsTurboMode)
+                ntfsTurboMenuItem.Checked = ntfsTurboMode;
+        }
+
+        private string GetScanModeLabel(ScanMode mode)
+        {
+            if (mode == ScanMode.NtfsTurbo) return "NTFS Turbo (en hızlı)";
+            if (mode == ScanMode.FastWinApi) return "Hızlı Tarama (WinAPI)";
+            return "Normal Tarama";
         }
 
         private void ApplyMenuTheme()
@@ -370,6 +648,20 @@ namespace AdvancedDiskAnalyzer
                 child.ForeColor = Theme.Text;
                 ThemeMenuItem(child);
             }
+        }
+
+        private void ApplyScanModeMenuTheme()
+        {
+            if (scanModeMenu == null) return;
+            scanModeMenu.BackColor = Theme.Card;
+            scanModeMenu.ForeColor = Theme.Text;
+            scanModeMenu.Renderer = new ToolStripProfessionalRenderer(new DarkMenuColorTable());
+            foreach (ToolStripItem item in scanModeMenu.Items)
+            {
+                item.BackColor = Theme.Card;
+                item.ForeColor = Theme.Text;
+            }
+            UpdateScanModeMenuChecks();
         }
 
         private async void RefreshCurrentView()
@@ -407,6 +699,18 @@ namespace AdvancedDiskAnalyzer
             catch (Exception ex) { MessageBox.Show(ex.Message, "Bağlantı", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         }
 
+        // ═══════════════════════════════════════════════════════════════════
+        // BÖLÜM: KULLANICI ARAYÜZÜ OLUŞTURMA (InitializeUI)
+        // ═══════════════════════════════════════════════════════════════════
+        // Amacı  : Tüm WinForms kontrollerini oluşturur ve konumlandırır.
+        // Yapı   : Sol panel (sidebar: logo, navigasyon, tarama butonu)
+        //          + Orta alan (dashboard kartları + ListView dosya listesi)
+        //          + Sağ panel (TabControl: Grafik / Treemap / Analiz)
+        //          + Üst menü çubuğu + alt durum çubuğu + ilerleme çubuğu
+        // Notlar : Owner-draw ListView, özel ScrollBar ve MetricCard
+        //          kontrollerinden oluşan modern arayüz. Her kontrol
+        //          Theme sınıfından renk alır, tema değişiminde güncellenir.
+        // ═══════════════════════════════════════════════════════════════════
         private void InitializeUI()
         {
             this.Text = "Advanced Disk Analyzer " + AppVersion;
@@ -426,7 +730,7 @@ namespace AdvancedDiskAnalyzer
             toolbarPanel.Resize += delegate { LayoutToolbar(); };
 
             Label titleLabel = new Label();
-            titleLabel.Text = "Disk Analyzer Pro";
+            titleLabel.Text = "Disk Analiz";
             titleLabel.Font = new Font("Segoe UI", 12, FontStyle.Bold);
             titleLabel.Location = new Point(22, 22);
             titleLabel.AutoSize = true;
@@ -452,6 +756,16 @@ namespace AdvancedDiskAnalyzer
             scanButton.Click += ScanButton_Click;
             toolbarPanel.Controls.Add(scanButton);
 
+            scanOptionsButton = new Button();
+            scanOptionsButton.Text = "▼";
+            scanOptionsButton.Size = new Size(40, 42);
+            scanOptionsButton.FlatStyle = FlatStyle.Flat;
+            scanOptionsButton.FlatAppearance.BorderSize = 0;
+            scanOptionsButton.Font = new Font("Segoe UI", 9, FontStyle.Bold);
+            scanOptionsButton.Cursor = Cursors.Hand;
+            scanOptionsButton.Click += ScanOptionsButton_Click;
+            scanModeMenu = BuildScanModeMenu();
+
             themeButton = new Button();
             themeButton.Text = "AYDINLIK";
             themeButton.Location = new Point(628, 18);
@@ -464,22 +778,22 @@ namespace AdvancedDiskAnalyzer
             toolbarPanel.Controls.Add(themeButton);
 
             filterLabel = new Label();
-            filterLabel.Text = "ARA";
-            filterLabel.Location = new Point(28, 26);
-            filterLabel.Size = new Size(34, 18);
+            filterLabel.Text = "🔍 ARA";
+            filterLabel.Location = new Point(24, 26);
+            filterLabel.Size = new Size(54, 18);
             filterLabel.Font = new Font("Segoe UI", 8, FontStyle.Bold);
             toolbarPanel.Controls.Add(filterLabel);
 
             filterBox = new TextBox();
-            filterBox.Location = new Point(68, 21);
-            filterBox.Size = new Size(265, 24);
+            filterBox.Location = new Point(82, 20);
+            filterBox.Size = new Size(265, 26);
             filterBox.BorderStyle = BorderStyle.FixedSingle;
-            filterBox.Font = new Font("Segoe UI", 9);
+            filterBox.Font = new Font("Segoe UI", 9.5f);
             filterBox.TextChanged += FilterBox_TextChanged;
             toolbarPanel.Controls.Add(filterBox);
 
             topFilesButton = new Button();
-            topFilesButton.Text = "TOP 100";
+            topFilesButton.Text = "İLK 100";
             topFilesButton.Location = new Point(350, 18);
             topFilesButton.Size = new Size(84, 34);
             topFilesButton.FlatStyle = FlatStyle.Flat;
@@ -544,7 +858,7 @@ namespace AdvancedDiskAnalyzer
             statusLabel.Location = new Point(28, 50);
             statusLabel.Width = 760;
             statusLabel.Font = new Font("Segoe UI", 8);
-            statusLabel.Text = "Klasor secmek icin Yeni Tarama butonuna basin.";
+            statusLabel.Text = "Klasör seçmek için Yeni Tarama butonuna basın.";
             toolbarPanel.Controls.Add(statusLabel);
 
             liveCountLabel = new Label();
@@ -555,7 +869,7 @@ namespace AdvancedDiskAnalyzer
             toolbarPanel.Controls.Add(liveCountLabel);
             LayoutToolbar();
 
-            // --- Ağ Sürücüsü Banner (basta gizli) ---
+            // --- Ağ Sürücüsü Banner (başta gizli) ---
             networkBanner = new Panel();
             networkBanner.Dock = DockStyle.Top;
             networkBanner.Height = 32;
@@ -573,17 +887,17 @@ namespace AdvancedDiskAnalyzer
             statsBar.Height = 28;
 
             statTotal = new Label();
-            statTotal.Location = new Point(15, 7); statTotal.Width = 220;
+            statTotal.Location = new Point(15, 7); statTotal.Width = 300;
             statTotal.Font = new Font("Courier New", 8);
             statsBar.Controls.Add(statTotal);
 
             statFiles = new Label();
-            statFiles.Location = new Point(245, 7); statFiles.Width = 200;
+            statFiles.Location = new Point(325, 7); statFiles.Width = 200;
             statFiles.Font = new Font("Courier New", 8);
             statsBar.Controls.Add(statFiles);
 
             statTime = new Label();
-            statTime.Location = new Point(455, 7); statTime.Width = 200;
+            statTime.Location = new Point(535, 7); statTime.Width = 200;
             statTime.Font = new Font("Courier New", 8);
             statsBar.Controls.Add(statTime);
 
@@ -626,14 +940,26 @@ namespace AdvancedDiskAnalyzer
             sidebarNavPanel = new Panel();
             sidebarNavPanel.Dock = DockStyle.Top;
             sidebarNavPanel.Height = 178;
-            Button navDashboard = CreateSidebarNavButton("Dashboard", 12, true);
-            navDashboard.Click += delegate { if (rootNode != null) { BuildPieData(rootNode); piePanel.Tag = rootNode; currentVisualNode = rootNode; tabControl.SelectedIndex = 0; piePanel.Invalidate(); } };
+            Button navDashboard = CreateSidebarNavButton("Genel Bakış", 12, true);
+            navDashboard.Click += delegate { 
+                SetActiveSidebarButton(navDashboard);
+                if (rootNode != null) { BuildPieData(rootNode); piePanel.Tag = rootNode; currentVisualNode = rootNode; tabControl.SelectedIndex = 0; piePanel.Invalidate(); } 
+            };
             Button navFiles = CreateSidebarNavButton("Dosyalar", 56, false);
-            navFiles.Click += delegate { treeView.Focus(); };
+            navFiles.Click += delegate { 
+                SetActiveSidebarButton(navFiles);
+                treeView.Focus(); 
+            };
             Button navAnalytics = CreateSidebarNavButton("Analizler", 100, false);
-            navAnalytics.Click += delegate { tabControl.SelectedIndex = 2; };
+            navAnalytics.Click += delegate { 
+                SetActiveSidebarButton(navAnalytics);
+                tabControl.SelectedIndex = 2; 
+            };
             Button navSettings = CreateSidebarNavButton("Hesap ve Plan", 144, false);
-            navSettings.Click += AccountButton_Click;
+            navSettings.Click += delegate { 
+                SetActiveSidebarButton(navSettings);
+                AccountButton_Click(navSettings, EventArgs.Empty); 
+            };
             sidebarNavPanel.Controls.Add(navDashboard);
             sidebarNavPanel.Controls.Add(navFiles);
             sidebarNavPanel.Controls.Add(navAnalytics);
@@ -643,17 +969,20 @@ namespace AdvancedDiskAnalyzer
             sidebarFooterPanel.Dock = DockStyle.Bottom;
             sidebarFooterPanel.Height = 126;
             scanButton.Location = new Point(20, 20);
-            scanButton.Size = new Size(258, 44);
+            scanButton.Size = new Size(217, 44);
+            scanOptionsButton.Location = new Point(238, 20);
+            scanOptionsButton.Size = new Size(42, 44);
             sidebarFooterPanel.Controls.Add(scanButton);
+            sidebarFooterPanel.Controls.Add(scanOptionsButton);
             Label footerHelp = new Label();
-            footerHelp.Text = "Support";
+            footerHelp.Text = "Destek";
             footerHelp.Location = new Point(24, 78);
             footerHelp.Size = new Size(110, 20);
             footerHelp.Font = new Font("Segoe UI", 8);
             footerHelp.Tag = "sidebar-muted";
             sidebarFooterPanel.Controls.Add(footerHelp);
             Label footerProfile = new Label();
-            footerProfile.Text = "Profile";
+            footerProfile.Text = "Profil";
             footerProfile.Location = new Point(150, 78);
             footerProfile.Size = new Size(110, 20);
             footerProfile.Font = new Font("Segoe UI", 8);
@@ -662,11 +991,19 @@ namespace AdvancedDiskAnalyzer
 
             treeView = new TreeView();
             treeView.Dock = DockStyle.Fill;
-            treeView.Font = new Font("Segoe UI", 9);
+            treeView.Font = new Font("Segoe UI", 9.5f);
             treeView.BorderStyle = BorderStyle.None;
+            treeView.ShowLines = false;
+            treeView.FullRowSelect = true;
+            treeView.HotTracking = true;
+            treeView.ItemHeight = 26;
             treeView.AfterSelect += TreeView_AfterSelect;
+            treeView.BeforeExpand += TreeView_BeforeExpand;
             treeView.AfterExpand += delegate { RefreshModernScrollBars(); };
             treeView.AfterCollapse += delegate { RefreshModernScrollBars(); };
+
+            // Modern Explorer tarzı (chevron okları, yumuşak hover efektleri vb.) görünüm uygula
+            WindowThemeHelper.ApplyExplorerTheme(treeView);
 
             treeScrollBar = new ModernScrollBar();
             treeScrollBar.Attach(treeView);
@@ -681,6 +1018,7 @@ namespace AdvancedDiskAnalyzer
             tabControl.Dock = DockStyle.Right;
             tabControl.Width = 460;
             tabControl.Font = new Font("Segoe UI", 9);
+            tabControl.SelectedIndexChanged += TabControl_SelectedIndexChanged;
 
             TabPage pieTab = new TabPage("  Grafik  ");
             piePanel = new Panel();
@@ -699,7 +1037,7 @@ namespace AdvancedDiskAnalyzer
             treemapPanel.MouseClick += TreemapPanel_MouseClick;
             treemapTab.Controls.Add(treemapPanel);
 
-            TabPage aiTab = new TabPage("  AI öneriler  ");
+            TabPage aiTab = new TabPage("  AI Öneriler  ");
             aiHost = new Panel();
             aiHost.Dock = DockStyle.Fill;
             aiPanel = new SmoothScrollPanel();
@@ -731,13 +1069,14 @@ namespace AdvancedDiskAnalyzer
             dashboardStripPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
             dashboardStripPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
             dashboardStripPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            dashboardStripPanel.Controls.Add(CreateMetricCard("Toplam Boyut", "Hazir", out summaryTotalLabel), 0, 0);
-            dashboardStripPanel.Controls.Add(CreateMetricCard("Dosya Sayisi", "0", out summaryFilesLabel), 1, 0);
-            dashboardStripPanel.Controls.Add(CreateMetricCard("Sure", "-", out summaryTimeLabel), 2, 0);
+            dashboardStripPanel.Controls.Add(CreateMetricCard("Toplam Boyut", "Hazır", out summaryTotalLabel), 0, 0);
+            dashboardStripPanel.Controls.Add(CreateMetricCard("Dosya Sayısı", "0", out summaryFilesLabel), 1, 0);
+            dashboardStripPanel.Controls.Add(CreateMetricCard("Süre", "-", out summaryTimeLabel), 2, 0);
             dashboardStripPanel.Controls.Add(CreateMetricCard("Konum", "-", out summaryPathLabel), 3, 0);
 
             listBodyPanel = new Panel();
             listBodyPanel.Dock = DockStyle.Fill;
+            listBodyPanel.Resize += delegate { UpdateListNativeMasks(); };
 
             listView = new SmoothListView();
             listView.Dock = DockStyle.Fill;
@@ -747,12 +1086,16 @@ namespace AdvancedDiskAnalyzer
             listView.OwnerDraw = true;
             listView.Font = new Font("Segoe UI", 9);
             listView.BorderStyle = BorderStyle.None;
+
+            // Explorer teması (modern scrollbarlar ve header) uygula
+            WindowThemeHelper.ApplyExplorerTheme(listView);
             listView.Columns.Add(listColumnTitles[0], 270);
             listView.Columns.Add(listColumnTitles[1], 90);
-            listView.Columns.Add(listColumnTitles[2], 55);
-            listView.Columns.Add(listColumnTitles[3], 115);
-            listView.Columns.Add(listColumnTitles[4], 65);
-            listView.Columns.Add(listColumnTitles[5], 280);
+            listView.Columns.Add(listColumnTitles[2], 90);
+            listView.Columns.Add(listColumnTitles[3], 55);
+            listView.Columns.Add(listColumnTitles[4], 115);
+            listView.Columns.Add(listColumnTitles[5], 65);
+            listView.Columns.Add(listColumnTitles[6], 280);
             listView.ColumnClick += ListView_ColumnClick;
             listView.DrawColumnHeader += ListView_DrawColumnHeader;
             listView.DrawItem += ListView_DrawItem;
@@ -761,22 +1104,23 @@ namespace AdvancedDiskAnalyzer
             listView.ColumnWidthChanged += delegate { UpdateListNativeMasks(); };
             listNativeVerticalMask = CreateNativeScrollbarMask();
             listNativeHorizontalMask = CreateNativeScrollbarMask();
-            listView.Controls.Add(listNativeVerticalMask);
-            listView.Controls.Add(listNativeHorizontalMask);
             AdjustListColumns();
             UpdateListNativeMasks();
 
             listScrollBar = new ModernScrollBar();
             listScrollBar.Attach(listView);
             listBodyPanel.Controls.Add(listView);
+            listBodyPanel.Controls.Add(listNativeVerticalMask);
+            listBodyPanel.Controls.Add(listNativeHorizontalMask);
             listBodyPanel.Controls.Add(listScrollBar);
             listHost.Controls.Add(listBodyPanel);
             listHost.Controls.Add(dashboardStripPanel);
             listScrollBar.BringToFront();
+            UpdateListNativeMasks();
 
             listContextMenu = new ContextMenuStrip();
             ToolStripMenuItem openItem   = new ToolStripMenuItem("  Aç (Explorer)");
-            ToolStripMenuItem copyItem   = new ToolStripMenuItem("  yolu Kopyala");
+            ToolStripMenuItem copyItem   = new ToolStripMenuItem("  Yolu Kopyala");
             ToolStripMenuItem deleteItem = new ToolStripMenuItem("  Sil");
             openItem.Click   += ContextMenu_Open;
             copyItem.Click   += ContextMenu_CopyPath;
@@ -787,7 +1131,7 @@ namespace AdvancedDiskAnalyzer
             listContextMenu.Items.Add(deleteItem);
             listView.ContextMenuStrip = listContextMenu;
 
-            // Ekleme sırası önemli: banner toolbar'ın altında görünmeli
+            // Ekleme sirasi onemli: banner toolbar'in altinda gorunmeli
             this.Controls.Add(listHost);
             this.Controls.Add(treeHost);
             this.Controls.Add(tabControl);
@@ -862,10 +1206,8 @@ namespace AdvancedDiskAnalyzer
         private string CompactPath(string path, int maxLength)
         {
             if (string.IsNullOrEmpty(path) || path.Length <= maxLength) return path ?? "";
-            string root = "";
-            try { root = Path.GetPathRoot(path); } catch { }
-            string name = "";
-            try { name = Path.GetFileName(path.TrimEnd('\\')); } catch { }
+            string root = PathText.GetRoot(path);
+            string name = PathText.GetFileName(path);
             if (!string.IsNullOrEmpty(root) && !string.IsNullOrEmpty(name))
             {
                 string compact = root + "..." + Path.DirectorySeparatorChar + name;
@@ -875,7 +1217,14 @@ namespace AdvancedDiskAnalyzer
         }
 
         // =====================================================================
-        // EULA / GIZLILIK GUVENCESI
+        // BÖLÜM: EULA / GİZLİLİK GÜVENCESİ
+        // =====================================================================
+        // Amacı  : İlk çalıştırmada kullanıcıdan gizlilik/EULA onayı alır.
+        // Yöntemi: Registry'de (HKCU\Software\AdvancedDiskAnalyzer) "PrivacyAccepted"
+        //          değeri kontrol edilir. Yoksa PrivacyConsentForm gösterilir.
+        //          Onay verilirse tarih, versiyon ve damga kaydedilir.
+        // Notlar : Kurumsal lisanslarda özel EULA metni desteklenir.
+        //          Onay reddedilirse uygulama kapatılır.
         // =====================================================================
 
         private void MainForm_Shown(object sender, EventArgs e)
@@ -922,17 +1271,25 @@ namespace AdvancedDiskAnalyzer
             }
             catch
             {
-                MessageBox.Show("Gizlilik onayı registry'e yazılamadı. Uygulama bu oturumda devam edecek.",
+                MessageBox.Show("Gizlilik onayı kayıt defterine yazılamadı. Uygulama bu oturumda devam edecek.",
                     "Uyari", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
 
         // =====================================================================
-        // AG SURUCUSU ALGILAMA
+        // BÖLÜM: AĞ SÜRÜCÜSÜ ALGILAMA
+        // =====================================================================
+        // Amacı  : Seçilen tarama yolunun ağ sürücüsü (UNC veya mapped drive)
+        //          olup olmadığını tespit eder ve kullanıcıyı bilgilendirir.
+        // Yöntemi: DriveInfo.DriveType == Network kontrolü + UNC path tespiti.
+        //          Mapped drive ise WMI (Win32_NetworkConnection) sorgusuyla
+        //          uzak hedef (\\server\share) bulunur.
+        // Etki   : Ağ sürücüsünde parallelism kısıtlanır (2 thread),
+        //          NTFS Turbo devre dışı bırakılır, banner gösterilir.
         // =====================================================================
 
         /// <summary>
-        /// Verilen path'in ağ sürücüsü (mapped drive veya UNC) olup olmadığını dondurur.
+        /// Verilen path'in ağ sürücüsü (mapped drive veya UNC) olup olmadığını döndürür.
         /// </summary>
         private bool IsNetworkPath(string path)
         {
@@ -954,7 +1311,7 @@ namespace AdvancedDiskAnalyzer
         }
 
         /// <summary>
-        /// Ag surucusu ise UNC hedefini bulmaya calisir, banner metnini hazirlar.
+        /// Ağ sürücüsü ise UNC hedefini bulmaya çalışır, banner metnini hazırlar.
         /// </summary>
         private string GetNetworkDriveDetail(string path)
         {
@@ -980,7 +1337,7 @@ namespace AdvancedDiskAnalyzer
         }
 
         /// <summary>
-        /// Banner'i göster veya gizle, renk ve metin ayarla.
+        /// Banner'ı göster veya gizle, renk ve metin ayarla.
         /// </summary>
         private void ShowNetworkBanner(bool show, string message = "")
         {
@@ -997,7 +1354,14 @@ namespace AdvancedDiskAnalyzer
         }
 
         // =====================================================================
-        // TEMA
+        // BÖLÜM: TEMA MOTORU
+        // =====================================================================
+        // Amacı  : Koyu ↔ Açık tema geçişini yönetir. Tüm kontrollerin
+        //          BackColor, ForeColor ve FlatAppearance değerlerini günceller.
+        // Yöntemi: ApplyTheme() tüm kontrol ağacını dolaşarak Tag property'sine
+        //          göre renk atar. DWM API ile başlık çubuğu da koyu yapılır.
+        // Kapsam : MainMenu, Toolbar, Sidebar, TreeView, ListView,
+        //          TabControl, PiePanel, AI Panel, ContextMenu, StatsBar
         // =====================================================================
 
         private void ThemeButton_Click(object sender, EventArgs e)
@@ -1006,6 +1370,8 @@ namespace AdvancedDiskAnalyzer
             themeButton.Text = Theme.IsDark ? "AYDINLIK" : "KARANLIK";
             ApplyTheme();
             piePanel.Invalidate();
+            if (rootNode != null)
+                GenerateAIRecommendations(currentSelectedDirectory ?? rootNode);
         }
 
         private void ApplyTheme()
@@ -1023,10 +1389,23 @@ namespace AdvancedDiskAnalyzer
             scanButton.BackColor = Theme.Accent;
             scanButton.ForeColor = Theme.IsDark ? Color.FromArgb(10, 10, 20) : Color.White;
             scanButton.FlatAppearance.BorderColor = Theme.Accent;
+            scanButton.FlatAppearance.MouseOverBackColor = Theme.IsDark ? Color.FromArgb(65, 145, 255) : Color.FromArgb(35, 105, 195);
+            scanButton.FlatAppearance.MouseDownBackColor = Theme.IsDark ? Color.FromArgb(35, 110, 220) : Color.FromArgb(15, 70, 150);
+            if (scanOptionsButton != null)
+            {
+                scanOptionsButton.BackColor = Theme.Accent;
+                scanOptionsButton.ForeColor = Theme.IsDark ? Color.FromArgb(10, 10, 20) : Color.White;
+                scanOptionsButton.FlatAppearance.BorderColor = Theme.Accent;
+                scanOptionsButton.FlatAppearance.MouseOverBackColor = Theme.IsDark ? Color.FromArgb(65, 145, 255) : Color.FromArgb(35, 105, 195);
+                scanOptionsButton.FlatAppearance.MouseDownBackColor = Theme.IsDark ? Color.FromArgb(35, 110, 220) : Color.FromArgb(15, 70, 150);
+            }
+            ApplyScanModeMenuTheme();
 
             themeButton.BackColor = Theme.Card;
             themeButton.ForeColor = Theme.SubText;
             themeButton.FlatAppearance.BorderColor = Theme.Border;
+            themeButton.FlatAppearance.MouseOverBackColor = Theme.Highlight;
+            themeButton.FlatAppearance.MouseDownBackColor = Theme.Border;
 
             filterBox.BackColor = Theme.Card;
             filterBox.ForeColor = Theme.Text;
@@ -1034,21 +1413,35 @@ namespace AdvancedDiskAnalyzer
             topFilesButton.BackColor = Theme.Card;
             topFilesButton.ForeColor = Theme.SubText;
             topFilesButton.FlatAppearance.BorderColor = Theme.Border;
+            topFilesButton.FlatAppearance.MouseOverBackColor = Theme.Highlight;
+            topFilesButton.FlatAppearance.MouseDownBackColor = Theme.Border;
+
             duplicatesButton.BackColor = Theme.Card;
             duplicatesButton.ForeColor = Theme.SubText;
             duplicatesButton.FlatAppearance.BorderColor = Theme.Border;
+            duplicatesButton.FlatAppearance.MouseOverBackColor = Theme.Highlight;
+            duplicatesButton.FlatAppearance.MouseDownBackColor = Theme.Border;
+
             csvButton.BackColor = Theme.Card;
             csvButton.ForeColor = Theme.SubText;
             csvButton.FlatAppearance.BorderColor = Theme.Border;
+            csvButton.FlatAppearance.MouseOverBackColor = Theme.Highlight;
+            csvButton.FlatAppearance.MouseDownBackColor = Theme.Border;
+
             bool signedIn = !string.IsNullOrEmpty(OnlineLicenseClient.GetSavedToken());
             accountButton.BackColor = signedIn ? Theme.Card : Theme.Surface;
             accountButton.ForeColor = signedIn ? Theme.Success : Theme.SubText;
             accountButton.FlatAppearance.BorderColor = signedIn ? Theme.Success : Theme.Border;
+            accountButton.FlatAppearance.MouseOverBackColor = Theme.Highlight;
+            accountButton.FlatAppearance.MouseDownBackColor = Theme.Border;
+
             licenseButton.BackColor = LicenseManager.HasPaidPlan(currentLicense) ? Theme.Success : Theme.Card;
             licenseButton.ForeColor = LicenseManager.HasPaidPlan(currentLicense)
                 ? (Theme.IsDark ? Color.FromArgb(10, 10, 20) : Color.White)
                 : Theme.SubText;
             licenseButton.FlatAppearance.BorderColor = LicenseManager.HasPaidPlan(currentLicense) ? Theme.Success : Theme.Border;
+            licenseButton.FlatAppearance.MouseOverBackColor = Theme.Highlight;
+            licenseButton.FlatAppearance.MouseDownBackColor = Theme.Border;
             licenseLabel.BackColor = Theme.Bg;
             licenseLabel.ForeColor = LicenseManager.IsEnterprise(currentLicense) ? Theme.Success : Theme.SubText;
 
@@ -1056,7 +1449,7 @@ namespace AdvancedDiskAnalyzer
             liveCountLabel.ForeColor = Theme.Success;
             ApplySidebarTheme();
 
-            // Banner rengi güncelle
+            // Banner rengi guncelle
             if (networkBanner.Visible)
                 ShowNetworkBanner(true, networkBannerLabel.Text);
 
@@ -1175,6 +1568,17 @@ namespace AdvancedDiskAnalyzer
                         button.ForeColor = Theme.IsDark ? Color.FromArgb(8, 12, 18) : Color.White;
                         button.FlatAppearance.BorderColor = Theme.Accent;
                         button.FlatAppearance.BorderSize = 0;
+                        button.FlatAppearance.MouseOverBackColor = Theme.IsDark ? Color.FromArgb(65, 145, 255) : Color.FromArgb(35, 105, 195);
+                        button.FlatAppearance.MouseDownBackColor = Theme.IsDark ? Color.FromArgb(35, 110, 220) : Color.FromArgb(15, 70, 150);
+                    }
+                    else if (button == scanOptionsButton)
+                    {
+                        button.BackColor = Theme.Accent;
+                        button.ForeColor = Theme.IsDark ? Color.FromArgb(8, 12, 18) : Color.White;
+                        button.FlatAppearance.BorderColor = Theme.Accent;
+                        button.FlatAppearance.BorderSize = 0;
+                        button.FlatAppearance.MouseOverBackColor = Theme.IsDark ? Color.FromArgb(65, 145, 255) : Color.FromArgb(35, 105, 195);
+                        button.FlatAppearance.MouseDownBackColor = Theme.IsDark ? Color.FromArgb(35, 110, 220) : Color.FromArgb(15, 70, 150);
                     }
                     else if (tag == "nav-active")
                     {
@@ -1182,6 +1586,8 @@ namespace AdvancedDiskAnalyzer
                         button.ForeColor = Theme.Text;
                         button.FlatAppearance.BorderColor = Theme.Accent;
                         button.FlatAppearance.BorderSize = 1;
+                        button.FlatAppearance.MouseOverBackColor = Theme.Highlight;
+                        button.FlatAppearance.MouseDownBackColor = Theme.Border;
                     }
                     else if (tag == "nav")
                     {
@@ -1189,6 +1595,8 @@ namespace AdvancedDiskAnalyzer
                         button.ForeColor = Theme.SubText;
                         button.FlatAppearance.BorderColor = Theme.Surface;
                         button.FlatAppearance.BorderSize = 0;
+                        button.FlatAppearance.MouseOverBackColor = Theme.Highlight;
+                        button.FlatAppearance.MouseDownBackColor = Theme.Border;
                     }
                 }
 
@@ -1210,16 +1618,27 @@ namespace AdvancedDiskAnalyzer
                 currentLicense = LicenseManager.Load();
 
             if (licenseLabel != null)
-                licenseLabel.Text = currentLicense.PlanName.ToUpperInvariant();
+                licenseLabel.Text = ToTurkishPlanName(currentLicense.PlanName).ToUpperInvariant();
 
             if (sidebarLicenseLabel != null)
-                sidebarLicenseLabel.Text = "Plan: " + currentLicense.PlanName;
+                sidebarLicenseLabel.Text = "Plan: " + ToTurkishPlanName(currentLicense.PlanName);
 
             if (licenseButton != null)
                 licenseButton.Text = "PLAN";
 
             if (this.IsHandleCreated)
                 ApplyTheme();
+        }
+
+        private string ToTurkishPlanName(string planName)
+        {
+            if (string.Equals(planName, "Free", StringComparison.OrdinalIgnoreCase))
+                return "Ücretsiz";
+            if (string.Equals(planName, "Enterprise", StringComparison.OrdinalIgnoreCase))
+                return "Kurumsal";
+            if (string.Equals(planName, "Pro", StringComparison.OrdinalIgnoreCase))
+                return "Pro";
+            return string.IsNullOrEmpty(planName) ? "Ücretsiz" : planName;
         }
 
         private void LicenseButton_Click(object sender, EventArgs e)
@@ -1230,7 +1649,7 @@ namespace AdvancedDiskAnalyzer
                 {
                     currentLicense = LicenseManager.Load();
                     RefreshLicenseUi();
-                    statusLabel.Text = "Lisans durumu: " + currentLicense.PlanName;
+                    statusLabel.Text = "Lisans durumu: " + ToTurkishPlanName(currentLicense.PlanName);
                     if (rootNode != null) GenerateAIRecommendations(rootNode);
                 }
             }
@@ -1262,19 +1681,6 @@ namespace AdvancedDiskAnalyzer
             return LicenseManager.HasFeature(currentLicense, feature);
         }
 
-        private void TabControl_DrawItem(object sender, DrawItemEventArgs e)
-        {
-            TabPage page = tabControl.TabPages[e.Index];
-            bool sel = (e.Index == tabControl.SelectedIndex);
-            Color bg   = sel ? Theme.Accent  : Theme.Card;
-            Color fg   = sel ? (Theme.IsDark ? Color.FromArgb(10,10,20) : Color.White) : Theme.SubText;
-            using (SolidBrush b = new SolidBrush(bg))
-                e.Graphics.FillRectangle(b, e.Bounds);
-            e.Graphics.DrawString(page.Text,
-                new Font("Segoe UI", 9, sel ? FontStyle.Bold : FontStyle.Regular),
-                new SolidBrush(fg), e.Bounds.X + 5, e.Bounds.Y + 5);
-        }
-
         private void ListView_DrawColumnHeader(object sender, DrawListViewColumnHeaderEventArgs e)
         {
             using (SolidBrush brush = new SolidBrush(Theme.Card))
@@ -1292,7 +1698,7 @@ namespace AdvancedDiskAnalyzer
 
         private void ListView_DrawItem(object sender, DrawListViewItemEventArgs e)
         {
-            // SubItem çizimi tüm satırı kontrol ediyor.
+            // SubItem cizimi tum satiri kontrol ediyor.
         }
 
         private void ListView_DrawSubItem(object sender, DrawListViewSubItemEventArgs e)
@@ -1302,14 +1708,25 @@ namespace AdvancedDiskAnalyzer
             using (SolidBrush brush = new SolidBrush(bg))
                 e.Graphics.FillRectangle(brush, e.Bounds);
 
+            // Seçili satırın soluna dikey mavi vurgu çizgisi çizimi (premium VS Code tarzı)
+            if (e.Item.Selected && e.ColumnIndex == 0)
+            {
+                Rectangle highlightBar = new Rectangle(e.Bounds.X, e.Bounds.Y, 3, e.Bounds.Height);
+                using (SolidBrush accentBrush = new SolidBrush(Theme.Accent))
+                    e.Graphics.FillRectangle(accentBrush, highlightBar);
+            }
+
             using (Pen pen = new Pen(Color.FromArgb(Theme.IsDark ? 34 : 220, Theme.Border)))
                 e.Graphics.DrawLine(pen, e.Bounds.Right - 1, e.Bounds.Top + 3, e.Bounds.Right - 1, e.Bounds.Bottom - 3);
 
             Color fg = e.Item.Selected ? Theme.Text : e.Item.ForeColor;
             if (fg == Color.Empty) fg = Theme.Text;
-            Rectangle textRect = new Rectangle(e.Bounds.X + 8, e.Bounds.Y, e.Bounds.Width - 12, e.Bounds.Height);
 
-            if (e.ColumnIndex == 2)
+            // İlk sütunda seçili satırın mavi çizgisinin üzerine yazı gelmemesi için metni kaydırıyoruz
+            int leftOffset = (e.ColumnIndex == 0 && e.Item.Selected) ? 11 : 8;
+            Rectangle textRect = new Rectangle(e.Bounds.X + leftOffset, e.Bounds.Y, e.Bounds.Width - (leftOffset + 4), e.Bounds.Height);
+
+            if (e.ColumnIndex == 3)
             {
                 int score;
                 if (int.TryParse(e.SubItem.Text, out score))
@@ -1332,31 +1749,33 @@ namespace AdvancedDiskAnalyzer
 
         private void AdjustListColumns()
         {
-            if (listView == null || listView.Columns.Count < 6) return;
+            if (listView == null || listView.Columns.Count < 7) return;
             int chrome = Math.Max(14, SystemInformation.VerticalScrollBarWidth);
             int available = Math.Max(620, listView.ClientSize.Width - chrome - 6);
 
             int sizeW = 104;
+            int allocatedW = 104;
             int scoreW = 56;
             int dateW = 126;
             int typeW = 74;
-            int nameW = Math.Max(220, Math.Min(360, (int)(available * 0.34)));
-            int locationW = available - (nameW + sizeW + scoreW + dateW + typeW);
+            int nameW = Math.Max(210, Math.Min(340, (int)(available * 0.30)));
+            int locationW = available - (nameW + sizeW + allocatedW + scoreW + dateW + typeW);
 
             if (locationW < 220)
             {
                 int need = 220 - locationW;
                 nameW = Math.Max(180, nameW - need);
-                locationW = available - (nameW + sizeW + scoreW + dateW + typeW);
+                locationW = available - (nameW + sizeW + allocatedW + scoreW + dateW + typeW);
             }
             locationW = Math.Max(180, locationW);
 
             SetColumnWidth(0, nameW);
             SetColumnWidth(1, sizeW);
-            SetColumnWidth(2, scoreW);
-            SetColumnWidth(3, dateW);
-            SetColumnWidth(4, typeW);
-            SetColumnWidth(5, locationW);
+            SetColumnWidth(2, allocatedW);
+            SetColumnWidth(3, scoreW);
+            SetColumnWidth(4, dateW);
+            SetColumnWidth(5, typeW);
+            SetColumnWidth(6, locationW);
             UpdateListNativeMasks();
             SmoothListView smooth = listView as SmoothListView;
             if (smooth != null) smooth.HideChrome();
@@ -1388,10 +1807,12 @@ namespace AdvancedDiskAnalyzer
             int h = Math.Max(14, SystemInformation.HorizontalScrollBarHeight);
             listNativeVerticalMask.BackColor = Theme.Surface;
             listNativeHorizontalMask.BackColor = Theme.Surface;
-            listNativeVerticalMask.Bounds = new Rectangle(Math.Max(0, listView.ClientSize.Width - w), 0, w, listView.ClientSize.Height);
-            listNativeHorizontalMask.Bounds = new Rectangle(0, Math.Max(0, listView.ClientSize.Height - h), listView.ClientSize.Width, h);
+            Rectangle b = listView.Bounds;
+            listNativeVerticalMask.Bounds = new Rectangle(Math.Max(0, b.Right - w), b.Top, w, Math.Max(0, b.Height));
+            listNativeHorizontalMask.Bounds = new Rectangle(b.Left, Math.Max(0, b.Bottom - h), Math.Max(0, b.Width), h);
             listNativeVerticalMask.BringToFront();
             listNativeHorizontalMask.BringToFront();
+            if (listScrollBar != null) listScrollBar.BringToFront();
             SmoothListView smooth = listView as SmoothListView;
             if (smooth != null) smooth.HideChrome();
         }
@@ -1402,19 +1823,30 @@ namespace AdvancedDiskAnalyzer
         }
 
         // =====================================================================
-        // UI TIMER
+        // BÖLÜM: UI ZAMANLAYICI (Canlı Liste Güncelleme)
+        // =====================================================================
+        // Amacı  : Tarama sırasında arkaplandaki thread'lerden gelen dosyaları
+        //          450ms aralıklarla ListView'e batch halinde ekler.
+        // Yöntemi: pendingFiles kuyruğundan max 60 dosya alınır, WM_SETREDRAW
+        //          kapatılıp ekleme yapılır, sonra tekrar açılır (flicker önleme).
+        // Sınır  : Ultra hızlı modda 1600, standart modda 4000 öğeden sonra
+        //          canlı liste durdurulur (UI donmasını önlemek için).
         // =====================================================================
 
         private void UiTimer_Tick(object sender, EventArgs e)
         {
             int liveLimit = GetCurrentLiveListLimit();
             liveCountLabel.Text = liveListLimited
-                ? string.Format("{0:N0} dosya  |  {1} canli liste {2:N0}+ ile sinirli", totalFilesFound, ultraFastMode ? "ultra" : "standart", liveLimit)
+                ? string.Format("{0:N0} dosya  |  {1} canlı liste {2:N0}+ ile sınırlı", totalFilesFound, ultraFastMode ? "ultra" : "standart", liveLimit)
                 : string.Format("{0:N0} dosya", totalFilesFound);
             if (summaryFilesLabel != null)
                 summaryFilesLabel.Text = string.Format("{0:N0}", totalFilesFound);
             if (summaryTotalLabel != null)
-                summaryTotalLabel.Text = FormatSize(Interlocked.Read(ref totalBytesScanned));
+            {
+                long logical = Interlocked.Read(ref totalBytesScanned);
+                long allocated = Interlocked.Read(ref totalAllocatedScanned);
+                summaryTotalLabel.Text = FormatLogicalAllocated(logical, allocated);
+            }
 
             List<FileNode> batch = new List<FileNode>();
             lock (queueLock)
@@ -1437,15 +1869,23 @@ namespace AdvancedDiskAnalyzer
             NativeListViewPaint.SetRedraw(listView, false);
             try
             {
+                List<ListViewItem> itemsToAdd = new List<ListViewItem>(batch.Count);
+                int currentCount = listView.Items.Count;
                 foreach (FileNode f in batch)
                 {
-                    if (listView.Items.Count >= liveLimit)
+                    if (currentCount + itemsToAdd.Count >= liveLimit)
                     {
                         liveListLimited = true;
                         break;
                     }
-                    listView.Items.Add(CreateFileListItem(f));
+                    itemsToAdd.Add(CreateFileListItem(f));
                 }
+                
+                if (itemsToAdd.Count > 0)
+                {
+                    listView.Items.AddRange(itemsToAdd.ToArray());
+                }
+
                 if (topItem != null && topItem.ListView == listView)
                 {
                     try { listView.TopItem = topItem; } catch { }
@@ -1464,7 +1904,19 @@ namespace AdvancedDiskAnalyzer
         }
 
         // =====================================================================
-        // TARAMA
+        // BÖLÜM: TARAMA MOTORU
+        // =====================================================================
+        // Amacı  : Klasör seçim diyaloğu açar, taramayı başlatır,
+        //          tamamlanınca ağaç/grafik/analiz panellerini doldurur.
+        // Akış   : 1) Klasör seçimi → 2) Ağ sürücüsü kontrolü
+        //          3) Yönetici yetkisi önerisi (NTFS Turbo için)
+        //          4) ScanRoot() — önce MFT Turbo dener, başarısız olursa
+        //             WinAPI FastScan'e düşer
+        //          5) Sonuç ağacı oluşturulur, görselleştirme tetiklenir
+        // İptal  : CancellationTokenSource ile tarama her an iptal edilebilir.
+        //          İptal sonrası o ana kadar bulunan dosyalar listede kalır.
+        // Geçmiş: Tarama sonucu CSV geçmişine yazılır, önceki snapshot ile
+        //          karşılaştırılıp delta gösterilir.
         // =====================================================================
 
         private async void ScanButton_Click(object sender, EventArgs e)
@@ -1478,18 +1930,19 @@ namespace AdvancedDiskAnalyzer
                 }
                 catch { }
                 scanButton.Enabled = false;
-                scanButton.Text = "IPTAL...";
+                scanButton.Text = "İPTAL...";
                 statusLabel.Text = "Tarama iptal ediliyor...";
                 return;
             }
 
+            ApplySelectedScanMode();
             FolderBrowserDialog dialog = new FolderBrowserDialog();
             if (dialog.ShowDialog() != DialogResult.OK) return;
 
             string selectedPath = dialog.SelectedPath;
             selectedScanPath = selectedPath;
 
-            // --- AG SURUCUSU KONTROLU ---
+            // --- AĞ SÜRÜCÜSÜ KONTROLÜ ---
             isNetworkDrive = IsNetworkPath(selectedPath);
             if (isNetworkDrive)
             {
@@ -1497,13 +1950,13 @@ namespace AdvancedDiskAnalyzer
                     return;
 
                 networkDriveInfo = GetNetworkDriveDetail(selectedPath);
-                string bannerMsg = "AG SURUCUSU  |  " + networkDriveInfo +
-                                   "  |  Yavas mod aktif — tarama daha uzun surebilir";
+                string bannerMsg = "AĞ SÜRÜCÜSÜ  |  " + networkDriveInfo +
+                                   "  |  Yavaş mod aktif - tarama daha uzun sürebilir";
                 ShowNetworkBanner(true, bannerMsg);
 
-                // Kullaniciya bilgi ver, onay al
+                // Kullanıcıya bilgi ver, onay al
                 DialogResult confirm = MessageBox.Show(
-                    "Ag sürücüsü seçildi:\n" + networkDriveInfo +
+                    "Ağ sürücüsü seçildi:\n" + networkDriveInfo +
                     "\n\nAğ taraması lokal taramadan çok daha yavaş olabilir." +
                     "\nDevam etmek istiyor musunuz?",
                     "Ağ Sürücüsü Algılandı",
@@ -1516,13 +1969,38 @@ namespace AdvancedDiskAnalyzer
                     return;
                 }
 
-                // Ag modunda SSD paralelligi kullanma
+                // Ağ modunda SSD paralelliği kullanma
                 isSSD = false;
             }
             else
             {
                 ShowNetworkBanner(false);
                 networkDriveInfo = "";
+            }
+
+            if (ShouldOfferAdminRestartForTurbo(selectedPath))
+            {
+                DialogResult adminChoice = MessageBox.Show(
+                    "En hızlı NTFS Turbo tarama için uygulamanın yönetici yetkisiyle çalışması gerekiyor.\n\n" +
+                    "Uygulamayı şimdi yönetici yetkileriyle yeniden başlatmak ister misiniz?\n\n" +
+                    "(Hayır seçeneğini tıklarsanız, tarama iptal edilmez ve yönetici yetkisi gerektirmeyen 'Hızlı Tarama (WinAPI)' motoru ile devam edilir.)",
+                    "Yönetici Yetkisi Gerekli (NTFS Turbo)",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
+
+                if (adminChoice == DialogResult.Yes)
+                {
+                    RestartAsAdmin_Click(this, EventArgs.Empty);
+                    return;
+                }
+                else
+                {
+                    // Hayır denilirse, sessizce Hızlı Tarama (WinAPI) moduna geçerek devam et
+                    ntfsTurboMode = false;
+                    selectedScanMode = ScanMode.FastWinApi;
+                    if (statusLabel != null)
+                        statusLabel.Text = "NTFS Turbo reddedildi, Hızlı Tarama (WinAPI) motoruna geçildi.";
+                }
             }
 
             CancellationTokenSource localCancel = new CancellationTokenSource();
@@ -1534,9 +2012,10 @@ namespace AdvancedDiskAnalyzer
             {
                 scanInProgress = true;
                 scanButton.Enabled = true;
-                scanButton.Text = "IPTAL";
+                if (scanOptionsButton != null) scanOptionsButton.Enabled = false;
+                scanButton.Text = "İPTAL";
 
-                // --- NORMAL TARAMA AKISI ---
+                // --- NORMAL TARAMA AKIŞI ---
                 liveUiTicks = 0;
                 treeView.Nodes.Clear();
                 listView.Items.Clear();
@@ -1547,6 +2026,9 @@ namespace AdvancedDiskAnalyzer
                 aiPanel.Controls.Clear();
                 totalFilesFound = 0;
                 totalBytesScanned = 0;
+                totalAllocatedScanned = 0;
+                duplicateHardLinksSkipped = 0;
+                countedHardLinks.Clear();
                 liveQueued = 0;
                 liveListLimited = false;
                 scoreOldFileThreshold = DateTime.Now.AddYears(-1);
@@ -1559,24 +2041,32 @@ namespace AdvancedDiskAnalyzer
                 currentPieSlices.Clear(); sliceAngles.Clear(); hoveredSlice = -1;
                 treemapTiles.Clear(); hoveredTreemapTile = -1;
                 statTotal.Text = ""; statFiles.Text = ""; statTime.Text = "";
-                UpdateSummaryCards("Taraniyor", "0", "-", selectedPath);
+                UpdateSummaryCards("Taranıyor", "0", "-", selectedPath);
 
                 progressBar.Style = ProgressBarStyle.Marquee;
                 uiTimer.Start();
 
-                // Ag surucusu degilse surucu tipini tespit et
+                // Ağ sürücüsü değilse sürücü tipini tespit et
                 if (!isNetworkDrive)
                     DetectDriveType(selectedPath);
                 else
-                    statusLabel.Text = "Ag sürücüsü - yavaş mod (2 iş parçacığı)";
+                    statusLabel.Text = "Ağ sürücüsü - yavaş mod (2 iş parçacığı)";
                 if (ultraFastMode && !isNetworkDrive)
                     statusLabel.Text += "  |  Ultra hızlı mod";
+                if (ntfsTurboMode && !isNetworkDrive && !IsRunningAsAdministrator())
+                    statusLabel.Text += "  |  NTFS Turbo için yönetici önerilir";
 
                 sw.Start();
-                DirectoryNode scannedRoot = await Task.Run(() => FastScan(selectedPath, token), token);
+                DirectoryNode scannedRoot = await Task.Run(() => ScanRoot(selectedPath, token), token);
                 token.ThrowIfCancellationRequested();
                 sw.Stop();
                 rootNode = scannedRoot;
+                if (lastScanEngine == "NTFS Turbo")
+                {
+                    totalFilesFound = CountFiles(rootNode);
+                    totalBytesScanned = rootNode.Size;
+                    totalAllocatedScanned = rootNode.AllocatedSize;
+                }
 
                 uiTimer.Stop();
                 UiTimer_Tick(null, null);
@@ -1600,20 +2090,29 @@ namespace AdvancedDiskAnalyzer
                 if (listScrollBar != null) listScrollBar.RefreshTheme();
                 liveCountLabel.Text  = string.Format("{0:N0} dosya", totalFilesFound);
                 statusLabel.Text     = isNetworkDrive
-                    ? "Tamamlandi  [Ag Surucusu: " + networkDriveInfo + "]"
-                    : "Tamamlandi";
-                statTotal.Text       = "Toplam: " + FormatSize(rootNode.Size);
+                    ? "Tamamlandı  [Ağ Sürücüsü: " + networkDriveInfo + "]"
+                    : "Tamamlandı  [" + lastScanEngine + "]";
+                if (!string.IsNullOrEmpty(lastTurboMessage) && lastScanEngine != "NTFS Turbo")
+                    statusLabel.Text += "  |  " + lastTurboMessage;
+                string totalDisplay = FormatLogicalAllocated(rootNode);
+                statTotal.Text       = "Toplam: " + totalDisplay;
                 statFiles.Text       = string.Format("{0:N0} dosya", totalFilesFound);
-                statTime.Text        = "Sure: " + sw.Elapsed.TotalSeconds.ToString("F1") + "sn";
-                UpdateSummaryCards(FormatSize(rootNode.Size), string.Format("{0:N0}", totalFilesFound), sw.Elapsed.TotalSeconds.ToString("F1") + " sn", selectedPath);
-                WriteScanHistory(selectedPath, rootNode.Size, totalFilesFound, sw.Elapsed, isNetworkDrive, networkDriveInfo);
+                string timeDisplay = sw.Elapsed.TotalSeconds.ToString("F1") + " sn";
+                if (!string.IsNullOrEmpty(lastScanEngine))
+                    timeDisplay += " / " + lastScanEngine;
+                statTime.Text        = "Süre: " + timeDisplay;
+                UpdateSummaryCards(totalDisplay, string.Format("{0:N0}", totalFilesFound), timeDisplay, selectedPath);
+                WriteScanHistory(selectedPath, rootNode.Size, rootNode.AllocatedSize, totalFilesFound, sw.Elapsed, isNetworkDrive, networkDriveInfo);
+                string snapshotDelta = WriteScanSnapshot(rootNode, selectedPath, sw.Elapsed);
+                if (!string.IsNullOrEmpty(snapshotDelta))
+                    statusLabel.Text += "  |  " + snapshotDelta;
             }
             catch (OperationCanceledException)
             {
                 sw.Stop();
                 statusLabel.Text = "Tarama iptal edildi. Listede tarama anına kadar bulunan dosyalar kaldı.";
                 statFiles.Text = string.Format("{0:N0} dosya bulundu", totalFilesFound);
-                statTime.Text = "Sure: " + sw.Elapsed.TotalSeconds.ToString("F1") + "sn";
+                statTime.Text = "Süre: " + sw.Elapsed.TotalSeconds.ToString("F1") + "sn";
                 UpdateSummaryCards(null, string.Format("{0:N0}", totalFilesFound), sw.Elapsed.TotalSeconds.ToString("F1") + " sn", selectedPath);
             }
             catch (Exception ex)
@@ -1629,6 +2128,7 @@ namespace AdvancedDiskAnalyzer
                 progressBar.Style = ProgressBarStyle.Blocks;
                 scanButton.Text = "Yeni Tarama";
                 scanButton.Enabled = true;
+                if (scanOptionsButton != null) scanOptionsButton.Enabled = true;
                 scanInProgress = false;
                 if (scanCancelSource == localCancel)
                     scanCancelSource = null;
@@ -1642,60 +2142,113 @@ namespace AdvancedDiskAnalyzer
             return FastScan(path, CancellationToken.None);
         }
 
+        private DirectoryNode ScanRoot(string path, CancellationToken token)
+        {
+            lastScanEngine = "WinAPI";
+            lastTurboMessage = "";
+
+            if (ntfsTurboMode && !isNetworkDrive)
+            {
+                string message;
+                DirectoryNode turboRoot = NtfsMftScanner.TryScan(path, token, scoringModel, scoreOldFileThreshold,
+                    allocatedSizeEnabled, QueueTurboFile, out message);
+                if (turboRoot != null)
+                {
+                    lastScanEngine = "NTFS Turbo";
+                    lastTurboMessage = message;
+                    return turboRoot;
+                }
+                lastTurboMessage = string.IsNullOrEmpty(message) ? "NTFS Turbo uygun değil, güvenli tarama kullanıldı." : message;
+            }
+
+            return FastScan(path, token);
+        }
+
+        private void QueueTurboFile(FileNode file)
+        {
+            if (file == null) return;
+            QueueLiveFile(file);
+        }
+
         private DirectoryNode FastScan(string path, CancellationToken token)
         {
             return FastScan(path, 0, token);
         }
 
+        // ── Özyinelemeli WinAPI Tarama (FastScan) ────────────────────────────
+        // Win32 FindFirstFile/FindNextFile API'leri ile dizin ağacını tarar.
+        // .NET Directory.GetFiles() yerine doğrudan kernel'e iner —
+        // yaklaşık 3-5x hız artışı sağlar. Her dosya için:
+        // - Boyut, değiştirme tarihi, uzantı çıkartılır
+        // - Allocated size: cluster hizalaması veya GetCompressedFileSize
+        // - Hard link kontrolü: aynı inode'un çift sayılması engellenir
+        // - Skor hesaplanır (boyut + yaş + uzantı + konum ağırlıklı formül)
+        // Parallelism: SSD'de CPU sayısına göre, HDD'de 2 thread,
+        //              ağ sürücüsünde max 2 (ağ tıkanmasını önler)
+        // ──────────────────────────────────────────────────────────────────
         private DirectoryNode FastScan(string path, int depth, CancellationToken token)
         {
             token.ThrowIfCancellationRequested();
             DirectoryNode node = new DirectoryNode();
-            node.Name = string.IsNullOrEmpty(Path.GetFileName(path)) ? path : Path.GetFileName(path);
+            string nodeName = PathText.GetFileName(path);
+            node.Name = string.IsNullOrEmpty(nodeName) ? path : nodeName;
             node.Path = path;
             try
             {
-                foreach (FileInfo info in SafeEnumerateFileInfos(path))
+                List<FastFileEntry> files;
+                List<FastFileEntry> subDirs;
+                FastEnumerate(path, out files, out subDirs);
+                long directoryClusterSize = allocatedSizeEnabled ? GetClusterSize(path) : 4096;
+
+                foreach (FastFileEntry entry in files)
                 {
                     token.ThrowIfCancellationRequested();
                     try
                     {
                         FileNode f = new FileNode();
-                        f.Name = info.Name; f.FullPath = info.FullName;
-                        f.Size = info.Length; f.LastModified = info.LastWriteTime;
-                        f.Extension = info.Extension.ToLowerInvariant();
-                        f.Score = scoringModel.Score(info.Length, info.LastWriteTime, f.Extension, info.Name, scoreOldFileThreshold);
-                        node.Files.Add(f); node.Size += info.Length;
+                        f.Name = entry.Name; f.FullPath = entry.FullPath;
+                        f.DirectoryPath = path;
+                        f.Size = entry.Size; f.LastModified = entry.LastWriteTime;
+                        f.Extension = PathText.GetExtension(entry.Name).ToLowerInvariant();
+                        f.AllocatedSize = allocatedSizeEnabled ? GetAllocatedSize(entry.FullPath, entry.Size, entry.Attributes, directoryClusterSize) : entry.Size;
+                        if (f.AllocatedSize <= 0) f.AllocatedSize = f.Size;
+                        f.CountedSize = f.Size;
+                        f.CountedAllocatedSize = f.AllocatedSize;
+                        ApplyHardLinkAccounting(f);
+                        f.Score = scoringModel.Score(f.Size, f.LastModified, f.Extension, f.Name, f.FullPath, scoreOldFileThreshold);
+                        node.Files.Add(f);
+                        node.Size += f.CountedSize;
+                        node.AllocatedSize += f.CountedAllocatedSize;
+                        node.FileCount++;
                         Interlocked.Increment(ref totalFilesFound);
-                        Interlocked.Add(ref totalBytesScanned, info.Length);
+                        Interlocked.Add(ref totalBytesScanned, f.CountedSize);
+                        Interlocked.Add(ref totalAllocatedScanned, f.CountedAllocatedSize);
                         QueueLiveFile(f);
                     }
                     catch { }
                 }
 
-                DirectoryInfo[] subDirs = SafeEnumerateDirectoryInfos(path);
-
-                // Ag sürücüsü: max 2 thread (ağ tıkanmaması için)
+                // Ağ sürücüsü: max 2 thread (ağ tıkanmaması için)
                 // SSD: tam paralel (CPU sayısı kadar)
                 // HDD: 2 thread (kafa çarpışması önleme)
                 int deg = GetScanDegree(depth);
-                bool useParallel = ShouldParallelize(subDirs.Length, depth);
+                bool useParallel = ShouldParallelize(subDirs.Count, depth);
 
-                DirectoryNode[] children = new DirectoryNode[subDirs.Length];
+                DirectoryNode[] children = new DirectoryNode[subDirs.Count];
                 if (useParallel)
                 {
-                    Parallel.For(0, subDirs.Length, new ParallelOptions { MaxDegreeOfParallelism = deg, CancellationToken = token }, i =>
+                    Parallel.For(0, subDirs.Count, new ParallelOptions { MaxDegreeOfParallelism = deg, CancellationToken = token }, i =>
                     {
                         token.ThrowIfCancellationRequested();
-                        children[i] = FastScan(subDirs[i].FullName, depth + 1, token);
+                        children[i] = FastScan(subDirs[i].FullPath, depth + 1, token);
                     });
                 }
                 else
                 {
-                    for (int i = 0; i < subDirs.Length; i++)
+                    for (int i = 0; i < subDirs.Count; i++)
                     {
                         token.ThrowIfCancellationRequested();
-                        children[i] = FastScan(subDirs[i].FullName, depth + 1, token);
+                        children[i] = FastScan(subDirs[i].FullPath, depth + 1, token);
                     }
                 }
 
@@ -1704,23 +2257,14 @@ namespace AdvancedDiskAnalyzer
                     if (child == null) continue;
                     node.SubDirectories.Add(child);
                     node.Size += child.Size;
+                    node.AllocatedSize += child.AllocatedSize;
+                    node.FileCount += child.FileCount > 0 ? child.FileCount : CountFiles(child);
+                    if (child.FilesArePartial) node.FilesArePartial = true;
                 }
             }
             catch (OperationCanceledException) { throw; }
             catch { }
             return node;
-        }
-
-        private FileInfo[] SafeEnumerateFileInfos(string path)
-        {
-            try { return new DirectoryInfo(path).GetFiles(); }
-            catch { return new FileInfo[0]; }
-        }
-
-        private DirectoryInfo[] SafeEnumerateDirectoryInfos(string path)
-        {
-            try { return new DirectoryInfo(path).GetDirectories(); }
-            catch { return new DirectoryInfo[0]; }
         }
 
         private int GetScanDegree(int depth)
@@ -1742,8 +2286,192 @@ namespace AdvancedDiskAnalyzer
             return depth == 0;
         }
 
+        private void FastEnumerate(string path, out List<FastFileEntry> files, out List<FastFileEntry> directories)
+        {
+            files = new List<FastFileEntry>();
+            directories = new List<FastFileEntry>();
+            string pattern;
+            try { pattern = CombineChildPath(path, "*"); }
+            catch { return; }
+
+            Win32FindData data;
+            IntPtr handle = NativeFileApi.FindFirstFile(NativeFileApi.ToExtendedPath(pattern), out data);
+            if (handle == NativeFileApi.InvalidHandleValue)
+                return;
+
+            try
+            {
+                do
+                {
+                    string name = data.cFileName;
+                    if (string.IsNullOrEmpty(name) || name == "." || name == "..")
+                        continue;
+
+                    FileAttributes attrs = (FileAttributes)data.dwFileAttributes;
+                    bool isDir = (attrs & FileAttributes.Directory) == FileAttributes.Directory;
+                    if (isDir && (attrs & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
+                        continue;
+
+                    string fullPath;
+                    try { fullPath = CombineChildPath(path, name); }
+                    catch { continue; }
+
+                    FastFileEntry entry = new FastFileEntry();
+                    entry.Name = name;
+                    entry.FullPath = fullPath;
+                    entry.IsDirectory = isDir;
+                    entry.Attributes = attrs;
+                    entry.Size = isDir ? 0 : (((long)data.nFileSizeHigh << 32) + data.nFileSizeLow);
+                    entry.LastWriteTime = FileTimeToLocalDateTime(data.ftLastWriteTimeHigh, data.ftLastWriteTimeLow);
+
+                    if (isDir)
+                        directories.Add(entry);
+                    else
+                        files.Add(entry);
+                }
+                while (NativeFileApi.FindNextFile(handle, out data));
+            }
+            finally
+            {
+                NativeFileApi.FindClose(handle);
+            }
+        }
+
+        private string CombineChildPath(string parent, string child)
+        {
+            if (string.IsNullOrEmpty(parent)) return child;
+            char last = parent[parent.Length - 1];
+            if (last == Path.DirectorySeparatorChar || last == Path.AltDirectorySeparatorChar)
+                return parent + child;
+            return parent + Path.DirectorySeparatorChar + child;
+        }
+
+        private DateTime FileTimeToLocalDateTime(uint high, uint low)
+        {
+            try
+            {
+                long fileTime = ((long)high << 32) | low;
+                if (fileTime <= 0) return DateTime.MinValue;
+                return DateTime.FromFileTimeUtc(fileTime).ToLocalTime();
+            }
+            catch { return DateTime.MinValue; }
+        }
+
+        // ── Dosya Boyut Hesaplama: Gerçek Disk Alanı (Allocated Size) ─────
+        // Mantıksal boyut (logical) ile diskte kaplanan alan (allocated) farklıdır.
+        // Cluster hizalaması: ((boyut + cluster - 1) / cluster) * cluster
+        // Sıkıştırılmış/sparse dosyalarda GetCompressedFileSize API'si kullanılır
+        // çünkü gerçek disk tabanı cluster hesabından çok farklı olabilir.
+        // ──────────────────────────────────────────────────────────────────
+        private long GetAllocatedSize(string path, long logicalSize, FileAttributes attributes, long clusterSize)
+        {
+            if (logicalSize <= 0) return 0;
+
+            bool compressedOrSparse =
+                (attributes & FileAttributes.Compressed) == FileAttributes.Compressed ||
+                (attributes & FileAttributes.SparseFile) == FileAttributes.SparseFile;
+
+            if (compressedOrSparse && !isNetworkDrive)
+            {
+                try
+                {
+                    uint high;
+                    uint low = NativeFileApi.GetCompressedFileSize(NativeFileApi.ToExtendedPath(path), out high);
+                    int err = Marshal.GetLastWin32Error();
+                    if (low != 0xFFFFFFFF || err == 0)
+                    {
+                        long value = ((long)high << 32) + low;
+                        if (value >= 0) return value;
+                    }
+                }
+                catch { }
+            }
+
+            if (clusterSize <= 0) clusterSize = 4096;
+            return ((logicalSize + clusterSize - 1) / clusterSize) * clusterSize;
+        }
+
+        private long GetClusterSize(string path)
+        {
+            string root;
+            try { root = Path.GetPathRoot(path); }
+            catch { root = ""; }
+            if (string.IsNullOrEmpty(root)) return 4096;
+
+            lock (clusterSizeLock)
+            {
+                long cached;
+                if (clusterSizeCache.TryGetValue(root, out cached)) return cached;
+            }
+
+            uint sectorsPerCluster, bytesPerSector, freeClusters, totalClusters;
+            long size = 4096;
+            try
+            {
+                if (NativeFileApi.GetDiskFreeSpace(root, out sectorsPerCluster, out bytesPerSector, out freeClusters, out totalClusters))
+                {
+                    long computed = (long)sectorsPerCluster * bytesPerSector;
+                    if (computed > 0) size = computed;
+                }
+            }
+            catch { }
+
+            lock (clusterSizeLock)
+                clusterSizeCache[root] = size;
+            return size;
+        }
+
+        // ── Hard Link Çift Sayım Koruması ───────────────────────────────
+        // NTFS'te hard link'ler aynı dosya verisini farklı dizin girişleriyle
+        // gösterir. Toplam boyut hesabında aynı dosyanın birden fazla kez
+        // sayılmasını önlemek için GetFileInformationByHandle ile dosyanın
+        // benzersiz kimliği (VolumeSerial + FileIndex) okunur.
+        // ConcurrentDictionary'de ilk görüleni say, sonrakileri sıfırla.
+        // Performans için sadece Windows/ProgramFiles altında uygulanır.
+        // ──────────────────────────────────────────────────────────────────
+        private void ApplyHardLinkAccounting(FileNode file)
+        {
+            if (!hardLinkAccuracyEnabled || file == null || file.Size <= 0)
+                return;
+            if (ultraFastMode && file.Size < UltraFastHardLinkMinBytes)
+                return;
+            if (!ShouldReadHardLinkIdentity(file.FullPath))
+                return;
+
+            FileIdentity identity;
+            if (!NativeFileApi.TryGetFileIdentity(file.FullPath, out identity))
+                return;
+
+            file.HardLinkCount = identity.LinkCount;
+            file.FileIdKey = identity.Key;
+            if (identity.LinkCount <= 1 || string.IsNullOrEmpty(identity.Key))
+                return;
+
+            if (!countedHardLinks.TryAdd(identity.Key, 1))
+            {
+                file.SharedHardLink = true;
+                file.CountedSize = 0;
+                file.CountedAllocatedSize = 0;
+                Interlocked.Increment(ref duplicateHardLinksSkipped);
+            }
+        }
+
+        private bool ShouldReadHardLinkIdentity(string fullPath)
+        {
+            if (string.IsNullOrEmpty(fullPath)) return false;
+            string path = fullPath.ToLowerInvariant();
+            if (path.IndexOf("\\windows\\") >= 0 ||
+                path.IndexOf("\\program files\\") >= 0 ||
+                path.IndexOf("\\program files (x86)\\") >= 0 ||
+                path.IndexOf("\\winsxs\\") >= 0)
+                return true;
+            return false;
+        }
+
         private void QueueLiveFile(FileNode file)
         {
+            if (liveListLimited)
+                return;
             int queued = Interlocked.Increment(ref liveQueued);
             if (queued <= GetCurrentLiveListLimit())
             {
@@ -1755,13 +2483,47 @@ namespace AdvancedDiskAnalyzer
             }
         }
 
+        // ═══════════════════════════════════════════════════════════════════
+        // BÖLÜM: TREEVIEW VE LISTVIEW YARDIMCILARI (Gezinme ve Sıralama)
+        // ═══════════════════════════════════════════════════════════════════
+        // Amacı  : Dizin ağacını (TreeView) ve dosya listesini (ListView)
+        //          yöneten yardımcı görsel ve mantıksal metotları içerir.
+        // Yöntemi: TreeView düğümlerini dinamik (lazy-loading) yükler. 
+        //          Kullanıcı düğümü genişletmeden (Expand) alt klasörler
+        //          belleğe/ağaca eklenmez, böylece UI kilitlenmesi önlenir.
+        //          ListView sütun tıklamalarında hızlı bellek içi sıralama
+        //          (SortListView) ve boyut/tarih ayrıştırma yapar.
+        // ═══════════════════════════════════════════════════════════════════
         private TreeNode BuildTreeNode(DirectoryNode node)
         {
             TreeNode tn = new TreeNode(node.Name + "  (" + FormatSize(node.Size) + ")");
             tn.Tag = node;
-            foreach (DirectoryNode sub in node.SubDirectories.OrderByDescending(s => s.Size))
-                tn.Nodes.Add(BuildTreeNode(sub));
+            if (node.SubDirectories.Count > 0)
+                tn.Nodes.Add(CreateTreePlaceholder());
             return tn;
+        }
+
+        private TreeNode CreateTreePlaceholder()
+        {
+            TreeNode placeholder = new TreeNode("Yükleniyor...");
+            placeholder.Tag = null;
+            return placeholder;
+        }
+
+        private bool HasTreePlaceholder(TreeNode node)
+        {
+            return node != null && node.Nodes.Count == 1 && node.Nodes[0].Tag == null;
+        }
+
+        private void TreeView_BeforeExpand(object sender, TreeViewCancelEventArgs e)
+        {
+            if (e == null || e.Node == null || !HasTreePlaceholder(e.Node)) return;
+            DirectoryNode node = e.Node.Tag as DirectoryNode;
+            if (node == null) return;
+
+            e.Node.Nodes.Clear();
+            foreach (DirectoryNode sub in node.SubDirectories.OrderByDescending(s => s.Size))
+                e.Node.Nodes.Add(BuildTreeNode(sub));
         }
 
         private void ListView_ColumnClick(object sender, ColumnClickEventArgs e)
@@ -1794,16 +2556,16 @@ namespace AdvancedDiskAnalyzer
                 string vb = b.SubItems.Count > sortColumn ? b.SubItems[sortColumn].Text : "";
                 int result;
 
-                if (sortColumn == 1)
+                if (sortColumn == 1 || sortColumn == 2)
                     result = ParseSize(va).CompareTo(ParseSize(vb));
-                else if (sortColumn == 2)
+                else if (sortColumn == 3)
                 {
                     int ia = 0, ib = 0;
                     int.TryParse(va, out ia);
                     int.TryParse(vb, out ib);
                     result = ia.CompareTo(ib);
                 }
-                else if (sortColumn == 3)
+                else if (sortColumn == 4)
                 {
                     DateTime da = DateTime.MinValue;
                     DateTime db = DateTime.MinValue;
@@ -1819,8 +2581,8 @@ namespace AdvancedDiskAnalyzer
 
             listView.BeginUpdate();
             listView.Items.Clear();
-            foreach (ListViewItem item in items)
-                listView.Items.Add(item);
+            if (items.Count > 0)
+                listView.Items.AddRange(items.ToArray());
             listView.EndUpdate();
 
             UpdateSortArrow();
@@ -1872,6 +2634,17 @@ namespace AdvancedDiskAnalyzer
             }
         }
 
+        // ═══════════════════════════════════════════════════════════════════
+        // BÖLÜM: FİLTRELEME VE ANALİZ DÜĞMELERİ (Arama ve Keşif)
+        // ═══════════════════════════════════════════════════════════════════
+        // Amacı  : Dosya listesinde anlık filtreleme yapılmasını ve
+        //          en büyük dosyalar/kopyaların listelenmesini sağlar.
+        // Yöntemi: TextChanged olayı 300ms gecikmeli bir zamanlayıcı
+        //          (FilterTimer_Tick) tetikler. Kullanıcı yazmayı bıraktığı
+        //          anda asenkron Task üzerinde LINQ filtrelemesi çalışır.
+        //          TopFiles/Duplicates butonları tüm ağacı asenkron
+        //          gezip sıralayarak en büyük/kopya dosyaları getirir.
+        // ═══════════════════════════════════════════════════════════════════
         private void FilterBox_TextChanged(object sender, EventArgs e)
         {
             if (suppressFilterTextChanged) return;
@@ -1897,7 +2670,7 @@ namespace AdvancedDiskAnalyzer
             int version = Interlocked.Increment(ref treeSelectionVersion);
             string filter = filterBox.Text.Trim().ToLowerInvariant();
             List<FileNode> source = currentSelectionFiles;
-            statusLabel.Text = string.IsNullOrEmpty(filter) ? "Liste yenileniyor..." : "Filtre uygulanıyor...";
+            statusLabel.Text = string.IsNullOrEmpty(filter) ? "Liste yenileniyor..." : "Filtre uygulaniyor...";
 
             List<FileNode> files = await Task.Run<List<FileNode>>(() =>
             {
@@ -1916,7 +2689,7 @@ namespace AdvancedDiskAnalyzer
             await PopulateListViewAsync(files, version);
             statusLabel.Text = string.IsNullOrEmpty(filter)
                 ? string.Format("{0:N0} dosya listelendi", files.Count)
-                : string.Format("{0:N0} eşleşme", files.Count);
+                : string.Format("{0:N0} eslesme", files.Count);
         }
 
         private async void TopFilesButton_Click(object sender, EventArgs e)
@@ -1935,7 +2708,7 @@ namespace AdvancedDiskAnalyzer
             currentSelectionFiles = files;
             currentSelectedDirectory = rootNode;
             await PopulateListViewAsync(files, version);
-            statusLabel.Text = "Top 100 en buyuk dosya";
+            statusLabel.Text = "En büyük 100 dosya";
         }
 
         private async void DuplicatesButton_Click(object sender, EventArgs e)
@@ -1958,20 +2731,31 @@ namespace AdvancedDiskAnalyzer
             currentSelectionFiles = files;
             currentSelectedDirectory = rootNode;
             await PopulateListViewAsync(files, version);
-            statusLabel.Text = string.Format("{0:N0} olasi kopya dosya listelendi", files.Count);
+            statusLabel.Text = string.Format("{0:N0} olası kopya dosya listelendi", files.Count);
         }
 
+        // ═══════════════════════════════════════════════════════════════════
+        // BÖLÜM: DIŞA AKTARIM VE TARAMA GEÇMİŞİ (Veri Raporlama)
+        // ═══════════════════════════════════════════════════════════════════
+        // Amacı  : Tarama sonuçlarını CSV olarak dışa aktarır ve yerel log
+        //          sisteminde (CSV/TSV logları) tarama geçmişini tutar.
+        // Yöntemi: StreamWriter kullanarak UTF-8 BOM ile ham CSV formatı
+        //          üretir. WriteScanSnapshot metodu, aynı klasörün önceki
+        //          taramalarıyla kıyaslama yaparak delta boyutu hesaplar.
+        // Notlar : Loglar %LOCALAPPDATA%\AdvancedDiskAnalyzer\Logs altında
+        //          scan-history.csv ve snapshots.tsv olarak saklanır.
+        // ═══════════════════════════════════════════════════════════════
         private void CsvButton_Click(object sender, EventArgs e)
         {
             if (rootNode == null)
             {
-                MessageBox.Show("önce bir tarama yapın.", "CSV", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Önce bir tarama yapın.", "CSV", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
             SaveFileDialog dialog = new SaveFileDialog();
-            dialog.Title = "CSV Export";
-            dialog.Filter = "CSV dosyasi (*.csv)|*.csv";
+            dialog.Title = "CSV Dışa Aktar";
+            dialog.Filter = "CSV dosyası (*.csv)|*.csv";
             dialog.FileName = "AdvancedDiskAnalyzer_" + DateTime.Now.ToString("yyyyMMdd_HHmm") + ".csv";
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
@@ -1981,18 +2765,22 @@ namespace AdvancedDiskAnalyzer
                 CollectAllFiles(rootNode, all);
                 using (StreamWriter writer = new StreamWriter(dialog.FileName, false, new UTF8Encoding(true)))
                 {
-                    writer.WriteLine("Name,SizeBytes,Size,Score,LastModified,Extension,FullPath");
+                    writer.WriteLine("Ad,BoyutBayt,Boyut,DiskteBayt,Diskte,Skor,SonDegisiklik,Uzanti,TamYol,HardLinkNotu");
                     foreach (FileNode f in all.OrderByDescending(f => f.Size))
                     {
+                        long allocated = f.AllocatedSize > 0 ? f.AllocatedSize : f.Size;
                         writer.WriteLine(string.Join(",", new string[]
                         {
                             Csv(f.Name),
                             f.Size.ToString(CultureInfo.InvariantCulture),
                             Csv(FormatSize(f.Size)),
+                            allocated.ToString(CultureInfo.InvariantCulture),
+                            Csv(FormatSize(allocated)),
                             f.Score.ToString(CultureInfo.InvariantCulture),
                             Csv(f.LastModified.ToString("yyyy-MM-dd")),
                             Csv(f.Extension),
-                            Csv(f.FullPath)
+                            Csv(f.FullPath),
+                            Csv(f.SharedHardLink ? "Hard link - tek sayıldı" : "")
                         }));
                     }
                 }
@@ -2024,7 +2812,21 @@ namespace AdvancedDiskAnalyzer
             }
         }
 
-        private void WriteScanHistory(string scanPath, long totalBytes, int fileCount, TimeSpan duration, bool networkScan, string networkInfo)
+        private void OpenSnapshotHistory_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                string path = GetSnapshotHistoryPath();
+                EnsureSnapshotHistoryFile(path);
+                Process.Start("notepad.exe", "\"" + path + "\"");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Snapshot geçmişi açılamadı:\n" + ex.Message, "Snapshot Geçmişi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private void WriteScanHistory(string scanPath, long totalBytes, long totalAllocatedBytes, int fileCount, TimeSpan duration, bool networkScan, string networkInfo)
         {
             try
             {
@@ -2040,12 +2842,15 @@ namespace AdvancedDiskAnalyzer
                         Csv(scanPath),
                         totalBytes.ToString(CultureInfo.InvariantCulture),
                         Csv(FormatSize(totalBytes)),
+                        totalAllocatedBytes.ToString(CultureInfo.InvariantCulture),
+                        Csv(FormatSize(totalAllocatedBytes)),
+                        duplicateHardLinksSkipped.ToString(CultureInfo.InvariantCulture),
                         fileCount.ToString(CultureInfo.InvariantCulture),
                         duration.TotalSeconds.ToString("F2", CultureInfo.InvariantCulture),
-                        Csv(networkScan ? "Network" : "Local"),
+                        Csv(networkScan ? "Ağ" : "Yerel"),
                         Csv(networkInfo),
-                        Csv(ultraFastMode ? "UltraFast" : "Standard"),
-                        Csv(currentLicense != null ? currentLicense.PlanName : "Free"),
+                        Csv(ultraFastMode ? "Ultra Hızlı" : "Standart"),
+                        Csv(currentLicense != null ? ToTurkishPlanName(currentLicense.PlanName) : "Ücretsiz"),
                         Csv(AppVersion)
                     }));
                 }
@@ -2061,15 +2866,187 @@ namespace AdvancedDiskAnalyzer
 
         private void EnsureScanHistoryFile(string path)
         {
-            string dir = Path.GetDirectoryName(path);
+            string dir = PathText.GetDirectoryName(path);
             if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
             if (!File.Exists(path))
             {
                 using (StreamWriter writer = new StreamWriter(path, false, new UTF8Encoding(true)))
                 {
-                    writer.WriteLine("Timestamp,User,Machine,ScanPath,TotalBytes,TotalSize,FileCount,DurationSeconds,ScanType,NetworkInfo,Mode,Plan,Version");
+                    writer.WriteLine("Zaman,Kullanıcı,Makine,TaramaYolu,ToplamBayt,ToplamBoyut,DiskteBayt,DiskteBoyut,HardLinkDuzeltmesi,DosyaSayısı,SüreSaniye,TaramaTürü,AğBilgisi,Mod,Plan,Sürüm");
                 }
             }
+        }
+
+        private string WriteScanSnapshot(DirectoryNode root, string scanPath, TimeSpan duration)
+        {
+            try
+            {
+                if (root == null) return "";
+                string path = GetSnapshotHistoryPath();
+                EnsureSnapshotHistoryFile(path);
+
+                long previousSize = 0;
+                long previousAllocated = 0;
+                ReadPreviousSnapshot(path, scanPath, out previousSize, out previousAllocated);
+
+                string largestFolder = "";
+                long largestFolderSize = 0;
+                DirectoryNode largest = root.SubDirectories.OrderByDescending(d => d.Size).FirstOrDefault();
+                if (largest != null)
+                {
+                    largestFolder = largest.Path;
+                    largestFolderSize = largest.Size;
+                }
+
+                using (StreamWriter writer = new StreamWriter(path, true, new UTF8Encoding(true)))
+                {
+                    writer.WriteLine(string.Join("\t", new string[]
+                    {
+                        Tsv(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")),
+                        Tsv(Environment.UserName),
+                        Tsv(Environment.MachineName),
+                        Tsv(scanPath),
+                        root.Size.ToString(CultureInfo.InvariantCulture),
+                        root.AllocatedSize.ToString(CultureInfo.InvariantCulture),
+                        totalFilesFound.ToString(CultureInfo.InvariantCulture),
+                        duration.TotalSeconds.ToString("F2", CultureInfo.InvariantCulture),
+                        duplicateHardLinksSkipped.ToString(CultureInfo.InvariantCulture),
+                        Tsv(largestFolder),
+                        largestFolderSize.ToString(CultureInfo.InvariantCulture),
+                        Tsv(currentLicense != null ? ToTurkishPlanName(currentLicense.PlanName) : "Ücretsiz")
+                    }));
+                }
+
+                if (previousSize <= 0) return "İlk snapshot kaydı";
+                long delta = root.Size - previousSize;
+                if (delta == 0) return "Önceki snapshot ile aynı";
+                return "Önceki snapshot: " + FormatSignedSize(delta);
+            }
+            catch { return ""; }
+        }
+
+        private string FormatSignedSize(long value)
+        {
+            if (value == 0) return FormatSize(0);
+            long absolute = value == long.MinValue ? long.MaxValue : Math.Abs(value);
+            return (value > 0 ? "+" : "-") + FormatSize(absolute);
+        }
+
+        private string FormatLogicalAllocated(DirectoryNode node)
+        {
+            if (node == null) return FormatSize(0);
+            return FormatLogicalAllocated(node.Size, node.AllocatedSize);
+        }
+
+        private string FormatLogicalAllocated(long logicalSize, long allocatedSize)
+        {
+            if (allocatedSize > 0 && allocatedSize != logicalSize)
+                return FormatSize(logicalSize) + " / " + FormatSize(allocatedSize) + " diskte";
+            return FormatSize(logicalSize);
+        }
+
+        private void ReadPreviousSnapshot(string filePath, string scanPath, out long previousSize, out long previousAllocated)
+        {
+            previousSize = 0;
+            previousAllocated = 0;
+            try
+            {
+                if (!File.Exists(filePath)) return;
+                string[] lines = File.ReadAllLines(filePath, Encoding.UTF8);
+                for (int i = lines.Length - 1; i >= 1; i--)
+                {
+                    string[] parts = lines[i].Split('\t');
+                    if (parts.Length < 6) continue;
+                    if (!string.Equals(parts[3], scanPath, StringComparison.OrdinalIgnoreCase)) continue;
+                    long.TryParse(parts[4], NumberStyles.Integer, CultureInfo.InvariantCulture, out previousSize);
+                    long.TryParse(parts[5], NumberStyles.Integer, CultureInfo.InvariantCulture, out previousAllocated);
+                    return;
+                }
+            }
+            catch { }
+        }
+
+        private string GetSnapshotHistoryPath()
+        {
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "AdvancedDiskAnalyzer", "Logs", "snapshots.tsv");
+        }
+
+        private void EnsureSnapshotHistoryFile(string path)
+        {
+            string dir = PathText.GetDirectoryName(path);
+            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            if (!File.Exists(path))
+            {
+                using (StreamWriter writer = new StreamWriter(path, false, new UTF8Encoding(true)))
+                {
+                    writer.WriteLine("Zaman\tKullanıcı\tMakine\tTaramaYolu\tToplamBayt\tDiskteBayt\tDosyaSayısı\tSüreSaniye\tHardLinkDüzeltmesi\tEnBüyükKlasör\tEnBüyükKlasörBayt\tPlan");
+                }
+            }
+        }
+
+        private string Tsv(string value)
+        {
+            if (value == null) value = "";
+            return value.Replace("\t", " ").Replace("\r", " ").Replace("\n", " ");
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // BÖLÜM: ASENKRON ARAYÜZ YENİLEME VE LİSTELEME (Seçim ve Doldurma)
+        // ═══════════════════════════════════════════════════════════════════
+        // Amacı  : TreeView üzerinde bir klasör seçildiğinde, o klasörün
+        //          içeriğini ListView'e asenkron ve parça parça (batch) doldurur.
+        // Yöntemi: Her seçimde bir treeSelectionVersion arttırılır. Eğer yeni
+        //          bir seçim yapılırsa, eski listeleme görevi (PopulateListViewAsync)
+        //          sürüm eşleşmesinden dolayı iptal edilir (concurrency control).
+        //          Büyük dosya listeleri Task.Delay(1) ile UI thread'i
+        //          bloklamadan akıcı bir şekilde eklenir.
+        // ═══════════════════════════════════════════════════════════════════
+        private void TabControl_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (sidebarNavPanel == null || tabControl == null) return;
+            Button target = null;
+            if (tabControl.SelectedIndex == 0 || tabControl.SelectedIndex == 1)
+            {
+                target = FindSidebarButtonByText("Genel Bakış");
+            }
+            else if (tabControl.SelectedIndex == 2)
+            {
+                target = FindSidebarButtonByText("Analizler");
+            }
+            if (target != null)
+            {
+                SetActiveSidebarButton(target);
+            }
+        }
+
+        private Button FindSidebarButtonByText(string text)
+        {
+            if (sidebarNavPanel == null) return null;
+            foreach (Control c in sidebarNavPanel.Controls)
+            {
+                Button btn = c as Button;
+                if (btn != null && btn.Text == text)
+                    return btn;
+            }
+            return null;
+        }
+
+        private void SetActiveSidebarButton(Button activeBtn)
+        {
+            if (activeBtn == null || sidebarNavPanel == null) return;
+            foreach (Control c in sidebarNavPanel.Controls)
+            {
+                Button btn = c as Button;
+                if (btn != null)
+                {
+                    bool isActive = (btn == activeBtn);
+                    btn.Tag = isActive ? "nav-active" : "nav";
+                    btn.Font = new Font("Segoe UI", 9, isActive ? FontStyle.Bold : FontStyle.Regular);
+                    btn.FlatAppearance.BorderSize = isActive ? 1 : 0;
+                }
+            }
+            ThemeSidebarChildren(sidebarNavPanel);
         }
 
         private async void TreeView_AfterSelect(object sender, TreeViewEventArgs e)
@@ -2081,6 +3058,9 @@ namespace AdvancedDiskAnalyzer
             currentSelectedDirectory = node;
             currentVisualNode = node;
             ClearFilterBoxSilently();
+
+            Button target = FindSidebarButtonByText("Dosyalar");
+            if (target != null) SetActiveSidebarButton(target);
             statusLabel.Text = "Klasör içeriği hazırlanıyor...";
 
             List<FileNode> files = await Task.Run<List<FileNode>>(() =>
@@ -2100,8 +3080,16 @@ namespace AdvancedDiskAnalyzer
             piePanel.Tag = node;
             piePanel.Invalidate();
             treemapPanel.Invalidate();
-            statusLabel.Text = node.Name + "  |  " + string.Format("{0:N0}", files.Count) +
-                (files.Count > DisplayFileLimit ? " dosya, ilk " + string.Format("{0:N0}", DisplayFileLimit) + " gösteriliyor" : " dosya listelendi");
+            if (node.FilesArePartial)
+            {
+                statusLabel.Text = node.Name + "  |  " + string.Format("{0:N0}", CountFiles(node)) +
+                    " dosya, Turbo hızlı önizlemede " + string.Format("{0:N0}", files.Count) + " öncelikli kayıt gösteriliyor";
+            }
+            else
+            {
+                statusLabel.Text = node.Name + "  |  " + string.Format("{0:N0}", files.Count) +
+                    (files.Count > DisplayFileLimit ? " dosya, ilk " + string.Format("{0:N0}", DisplayFileLimit) + " gösteriliyor" : " dosya listelendi");
+            }
             RefreshModernScrollBars();
         }
 
@@ -2121,8 +3109,11 @@ namespace AdvancedDiskAnalyzer
 
                 int end = Math.Min(displayCount, index + batchSize);
                 listView.BeginUpdate();
+                List<ListViewItem> batchItems = new List<ListViewItem>(end - index);
                 for (int i = index; i < end; i++)
-                    listView.Items.Add(CreateFileListItem(files[i]));
+                    batchItems.Add(CreateFileListItem(files[i]));
+                if (batchItems.Count > 0)
+                    listView.Items.AddRange(batchItems.ToArray());
                 listView.EndUpdate();
 
                 index = end;
@@ -2141,10 +3132,13 @@ namespace AdvancedDiskAnalyzer
         {
             ListViewItem item = new ListViewItem(file.Name);
             item.SubItems.Add(FormatSize(file.Size));
+            item.SubItems.Add(FormatSize(file.AllocatedSize > 0 ? file.AllocatedSize : file.Size));
             item.SubItems.Add(file.Score.ToString());
             item.SubItems.Add(file.LastModified.ToString("yyyy-MM-dd"));
             item.SubItems.Add(file.Extension);
-            item.SubItems.Add(Path.GetDirectoryName(file.FullPath));
+            string location = !string.IsNullOrEmpty(file.DirectoryPath) ? file.DirectoryPath : PathText.GetDirectoryName(file.FullPath);
+            if (file.SharedHardLink) location = "[Hard link - tek sayıldı] " + location;
+            item.SubItems.Add(location);
             item.Tag = file.FullPath;
 
             item.BackColor = Theme.Surface;
@@ -2152,10 +3146,15 @@ namespace AdvancedDiskAnalyzer
             return item;
         }
 
-        // =====================================================================
-        // SAG TIK MENU
-        // =====================================================================
-
+        // ═══════════════════════════════════════════════════════════════════
+        // BÖLÜM: SAĞ TIK BAĞLAM MENÜSÜ (Dosya İşlemleri)
+        // ═══════════════════════════════════════════════════════════════════
+        // Amacı  : ListView üzerindeki öğelere sağ tıklandığında açılan
+        //          Explorer'da göster, yolu kopyala ve sil seçeneklerini yönetir.
+        // Yöntemi: Windows Geri Dönüşüm Kutusu API'sini (SHFileOperation)
+        //          kullanarak dosyaları güvenli bir şekilde siler. Silinen
+        //          öğeler bellek içi ağaç modelinden de çıkartılarak UI güncellenir.
+        // ═══════════════════════════════════════════════════════════════════
         private void ContextMenu_Open(object sender, EventArgs e)
         {
             if (listView.SelectedItems.Count == 0) return;
@@ -2173,26 +3172,33 @@ namespace AdvancedDiskAnalyzer
         {
             if (listView.SelectedItems.Count == 0) return;
             string path = listView.SelectedItems[0].Tag as string; if (path == null) return;
-            string name = Path.GetFileName(path);
-            if (MessageBox.Show("Silinsin mi?\n\n" + name, "Sil", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+            string name = PathText.GetFileName(path);
+            if (MessageBox.Show("Geri Dönüşüm Kutusu'na taşınsın mı?\n\n" + name,
+                "Güvenli Silme", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
             {
                 try
                 {
-                    long freed = File.Exists(path) ? new FileInfo(path).Length : 0;
-                    File.Delete(path);
+                    FileNode modelFile = FindFileNode(rootNode, path);
+                    long freed = EstimateFreedSize(modelFile, path);
+                    MoveFileToRecycleBin(path);
                     HashSet<string> deleted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     deleted.Add(path);
                     ApplyDeletedFilesToModel(deleted, freed);
-                    statusLabel.Text = name + " silindi. Kazanc: " + FormatSize(freed);
+                    statusLabel.Text = name + " Geri Dönüşüm Kutusu'na taşındı. Kazanç: " + FormatSize(freed);
                 }
                 catch (Exception ex) { MessageBox.Show("Hata: " + ex.Message); }
             }
         }
 
-        // =====================================================================
-        // PASTA GRAFIK
-        // =====================================================================
-
+        // ═══════════════════════════════════════════════════════════════════
+        // BÖLÜM: PASTA GRAFİK GÖRSELLEŞTİRME (Pie Chart Render)
+        // ═══════════════════════════════════════════════════════════════════
+        // Amacı  : Seçilen klasörün alt dizin boyut dağılımlarını görselleştirir.
+        // Yöntemi: GDI+ kütüphanesi kullanarak piePanel üzerinde Paint olayı ile
+        //          çizim yapar. Açı hesaplaması (sliceAngles) toplam boyuta oranla
+        //          yapılır. Fare koordinat takibi ile dilimlerin üzerine gelindiğinde
+        //          (hover) dilim dışarı kayar ve detay kartı (tooltip) çizilir.
+        // ═══════════════════════════════════════════════════════════════════
         private Color[] pieColors = new Color[]
         {
             Color.FromArgb(90, 205, 255),
@@ -2232,13 +3238,13 @@ namespace AdvancedDiskAnalyzer
             int w = piePanel.Width, h = piePanel.Height;
             g.Clear(Theme.Bg);
 
-            g.DrawString("Boyut Dağılımı",
+            g.DrawString("Boyut Dagilimi",
                 new Font("Segoe UI", 11, FontStyle.Bold),
                 new SolidBrush(Theme.Text), new PointF(16, 14));
 
             if (currentPieSlices.Count == 0)
             {
-                g.DrawString("Henuz tarama yapilmadi.", new Font("Segoe UI", 9),
+                g.DrawString("Henüz tarama yapılmadı.", new Font("Segoe UI", 9),
                     new SolidBrush(Theme.SubText), new PointF(16, 50));
                 return;
             }
@@ -2272,21 +3278,70 @@ namespace AdvancedDiskAnalyzer
                 using (Pen p = new Pen(Theme.Bg, hov ? 3 : 2))  g.DrawPie(p, dr, start, sweep);
             }
 
+            // ── Donut Boşluğu Çizimi ──────────────────────────────────────────
+            int holeSize = (int)(pieSize * 0.58);
+            Rectangle holeRect = new Rectangle(cx - holeSize / 2, cy - holeSize / 2, holeSize, holeSize);
+            using (SolidBrush bgBrush = new SolidBrush(Theme.Bg))
+                g.FillEllipse(bgBrush, holeRect);
+            using (Pen borderPen = new Pen(Theme.Border, 1))
+                g.DrawEllipse(borderPen, holeRect);
+
+            // Merkez Bilgi Metinleri
+            string labelLine = "";
+            string sizeLine = "";
+            string pctLine = "";
+            Color labelColor = Theme.SubText;
+            Color sizeColor = Theme.Text;
+            Color pctColor = Theme.SubText;
+
             if (hoveredSlice >= 0 && hoveredSlice < currentPieSlices.Count)
             {
                 var sl = currentPieSlices[hoveredSlice];
                 long tot = currentPieSlices.Sum(s => s.Value);
                 double pct = sl.Value / (double)tot * 100.0;
-                string tip = sl.Key + "\n" + FormatSize(sl.Value) + "  (" + pct.ToString("F1") + "%)";
-                Font tipFont = new Font("Segoe UI", 9, FontStyle.Bold);
-                SizeF ts = g.MeasureString(tip, tipFont);
-                int tx = cx - (int)ts.Width / 2, ty = cy - (int)ts.Height / 2;
-                Rectangle tr = new Rectangle(tx - 10, ty - 6, (int)ts.Width + 20, (int)ts.Height + 12);
-                using (SolidBrush bg2 = new SolidBrush(Color.FromArgb(215, Theme.Card)))
-                    g.FillRectangle(bg2, tr);
-                g.DrawRectangle(new Pen(pieColors[hoveredSlice % pieColors.Length], 2), tr);
-                g.DrawString(tip, tipFont, new SolidBrush(Theme.Text), tx, ty);
+
+                labelLine = sl.Key;
+                if (labelLine.Length > 12) labelLine = labelLine.Substring(0, 10) + "...";
+                sizeLine = FormatSize(sl.Value);
+                pctLine = pct.ToString("F1") + "%";
+                labelColor = pieColors[hoveredSlice % pieColors.Length]; // Slice rengini kullanarak vurgula
             }
+            else
+            {
+                long tot = currentPieSlices.Sum(s => s.Value);
+                labelLine = "Toplam Boyut";
+                sizeLine = FormatSize(tot);
+                pctLine = string.Format("{0:N0} dosya", totalFilesFound);
+            }
+
+            Font fontLabel = new Font("Segoe UI", 8.5f, FontStyle.Bold);
+            Font fontSize = new Font("Segoe UI", 11f, FontStyle.Bold);
+            Font fontPct = new Font("Segoe UI", 8f, FontStyle.Regular);
+
+            SizeF szLabel = g.MeasureString(labelLine, fontLabel);
+            SizeF szSize = g.MeasureString(sizeLine, fontSize);
+            SizeF szPct = g.MeasureString(pctLine, fontPct);
+
+            float spacing = 2;
+            float totalHeight = szLabel.Height + szSize.Height + szPct.Height + (spacing * 2);
+            float startY = cy - totalHeight / 2;
+
+            // Satır 1: Başlık / Tip
+            float x1 = cx - szLabel.Width / 2;
+            using (SolidBrush br = new SolidBrush(labelColor))
+                g.DrawString(labelLine, fontLabel, br, x1, startY);
+
+            // Satır 2: Boyut
+            float y2 = startY + szLabel.Height + spacing;
+            float x2 = cx - szSize.Width / 2;
+            using (SolidBrush br = new SolidBrush(sizeColor))
+                g.DrawString(sizeLine, fontSize, br, x2, y2);
+
+            // Satır 3: Yüzde / Dosya Sayısı
+            float y3 = y2 + szSize.Height + spacing;
+            float x3 = cx - szPct.Width / 2;
+            using (SolidBrush br = new SolidBrush(pctColor))
+                g.DrawString(pctLine, fontPct, br, x3, y3);
 
             int legendY = pieY + pieSize + 16;
             long total = currentPieSlices.Sum(s => s.Value);
@@ -2323,7 +3378,8 @@ namespace AdvancedDiskAnalyzer
             float dist = (float)Math.Sqrt(dx * dx + dy * dy);
             int newHover = -1;
 
-            if (dist <= pieSize / 2.0f + 10)
+            int holeSize = (int)(pieSize * 0.58);
+            if (dist > holeSize / 2.0f && dist <= pieSize / 2.0f + 10)
             {
                 float angle = (float)(Math.Atan2(dy, dx) * 180.0 / Math.PI) + 90;
                 if (angle < 0) angle += 360;
@@ -2366,10 +3422,16 @@ namespace AdvancedDiskAnalyzer
             piePanel.Invalidate();
         }
 
-        // =====================================================================
-        // TREEMAP
-        // =====================================================================
-
+        // ═══════════════════════════════════════════════════════════════════
+        // BÖLÜM: TREEMAP GÖRSELLEŞTİRME (Alan Bazlı Dağılım Haritası)
+        // ═══════════════════════════════════════════════════════════════════
+        // Amacı  : Klasör ve dosya boyutlarını hiyerarşik dikdörtgenler halinde
+        //          görselleştirerek en çok yer kaplayan alanları anında gösterir.
+        // Yöntemi: Squarified veya basit bölme algoritması (BuildTreemapTiles) ile
+        //          verilen alanı (area) dosya boyut oranlarına göre alt dikdörtgenlere
+        //          böler. Fareyle tıklanan alt bölümler (TreemapPanel_MouseClick)
+        //          ilgili dizini visual root yapar ve derinlemesine inceleme sunar.
+        // ═══════════════════════════════════════════════════════════════════
         private void TreemapPanel_Paint(object sender, PaintEventArgs e)
         {
             Graphics g = e.Graphics;
@@ -2419,7 +3481,7 @@ namespace AdvancedDiskAnalyzer
                     string label = TruncateForReport(tile.Label, Math.Max(8, r.Width / 8));
                     using (Font font = new Font("Segoe UI", r.Height > 60 ? 8 : 7, FontStyle.Bold))
                     using (Brush brush = new SolidBrush(Color.White))
-                        g.DrawString(label, font, brush, r.X + 5, r.Y + 4);
+                         g.DrawString(label, font, brush, r.X + 5, r.Y + 4);
                 }
 
                 if (r.Width > 96 && r.Height > 54)
@@ -2571,10 +3633,17 @@ namespace AdvancedDiskAnalyzer
             statusLabel.Text = node.Name + "  |  " + string.Format("{0:N0}", files.Count) + " dosya";
         }
 
-        // =====================================================================
-        // AI ONERILER
-        // =====================================================================
-
+        // ═══════════════════════════════════════════════════════════════════
+        // BÖLÜM: AKILLI ANALİZ VE ÖNERİLER MOTORU (Gereksiz Dosya Keşfi)
+        // ═══════════════════════════════════════════════════════════════════
+        // Amacı  : Disk taraması bittikten sonra, dosyaları tarayarak akıllı
+        //          temizlik planı hazırlar ve risk seviyelerine göre gruplar.
+        // Yöntemi: CleanupRules sınıfı üzerinden dosyaları geçirir.
+        //          deletable: Kesin silinebilir (Temp, Log, vb. risksiz konumlar)
+        //          cautious: İncelemeli temizlik (Kullanıcı verileri hariç)
+        //          archive: Son 6 aydır dokunulmamış büyük dosyalar (medya, zip)
+        //          Kullanıcı arayüzünde dinamik olarak öneri kartları oluşturur.
+        // ═══════════════════════════════════════════════════════════════════
         private List<string> deletableFilePaths = new List<string>();
 
         private void GenerateAIRecommendations(DirectoryNode root)
@@ -2596,16 +3665,64 @@ namespace AdvancedDiskAnalyzer
             pdfBtn.Click += PdfReportBtn_Click;
             aiPanel.Controls.Add(pdfBtn);
 
-            Button csvReportBtn = CreateAiButton("CSV Export", 154, y, 132, Theme.Accent2);
+            Button csvReportBtn = CreateAiButton("CSV Dışa Aktar", 154, y, 132, Theme.Accent2);
             csvReportBtn.Click += CsvButton_Click;
             aiPanel.Controls.Add(csvReportBtn);
 
-            Button dupReportBtn = CreateAiButton("Kopyalari Goster", 296, y, 146, Theme.Warning);
+            Button dupReportBtn = CreateAiButton("Kopyaları Göster", 296, y, 146, Theme.Warning);
             dupReportBtn.Click += DuplicatesButton_Click;
             aiPanel.Controls.Add(dupReportBtn);
             y += 48;
 
-            // Ag surucusu ise ozel not goster
+            DateTime now = DateTime.Now;
+            DateTime archiveThreshold = now.AddMonths(-6);
+            DateTime oldThreshold = now.AddYears(-1);
+
+            List<FileNode> deletable = allFiles
+                .Where(f => CleanupRules.IsStrictSafeCleanupCandidate(f))
+                .OrderByDescending(f => CleanupPriority(f)).ToList();
+            long deletableSize = deletable.Sum(f => f.Size);
+            deletableFilePaths = deletable.Select(f => f.FullPath).ToList();
+
+            List<FileNode> cautiousCleanup = allFiles
+                .Where(f => CleanupRules.IsReviewCleanupCandidate(f) && !deletable.Contains(f))
+                .OrderByDescending(f => CleanupPriority(f))
+                .Take(10).ToList();
+
+            List<FileNode> archiveCandidates = allFiles
+                .Where(f => CleanupRules.IsArchiveCandidate(f, archiveThreshold) &&
+                            !CleanupRules.IsStrictSafeCleanupCandidate(f) &&
+                            !CleanupRules.IsProtectedSystemPath(f.FullPath))
+                .OrderByDescending(f => f.Size)
+                .Take(10).ToList();
+            long archiveSize = archiveCandidates.Sum(f => f.Size);
+
+            List<FileNode> reviewCandidates = allFiles
+                .Where(f => f.Score >= 60 &&
+                            !CleanupRules.IsStrictSafeCleanupCandidate(f) &&
+                            !CleanupRules.IsProtectedSystemPath(f.FullPath))
+                .OrderByDescending(f => f.Score)
+                .ThenByDescending(f => f.Size)
+                .Take(8).ToList();
+            long reviewSize = reviewCandidates.Sum(f => f.Size);
+
+            List<FileNode> protectedLarge = allFiles
+                .Where(f => CleanupRules.IsProtectedSystemPath(f.FullPath) && f.Size > 100L * 1024L * 1024L)
+                .OrderByDescending(f => f.Size)
+                .Take(5).ToList();
+            long protectedSize = protectedLarge.Sum(f => f.Size);
+
+            List<DuplicateGroup> duplicateGroups = BuildDuplicateGroups(allFiles);
+            long duplicateWaste = duplicateGroups.Sum(g => g.WastedSize);
+
+            var bigOld = allFiles
+                .Where(f => f.Size > 50 * 1024 * 1024 && f.LastModified < oldThreshold)
+                .OrderByDescending(f => f.Size).Take(10).ToList();
+
+            var topLargest = allFiles.OrderByDescending(f => f.Size).Take(6).ToList();
+            var bigDirs = root.SubDirectories.OrderByDescending(d => d.Size).Take(6).ToList();
+
+            // Ağ sürücüsü ise özel not göster
             if (isNetworkDrive)
             {
                 AddAiSection(ref y, "AĞ SÜRÜCÜSÜ TARAMASI  |  " + networkDriveInfo, Theme.Warning);
@@ -2613,25 +3730,47 @@ namespace AdvancedDiskAnalyzer
                 y += 6;
             }
 
-            var deletable = allFiles
-                .Where(f => f.Extension == ".tmp" || f.Extension == ".log" ||
-                            f.Extension == ".bak" || f.Extension == ".old" || f.Name.StartsWith("~"))
-                .OrderByDescending(f => f.Size).ToList();
-            long deletableSize = deletable.Sum(f => f.Size);
-            deletableFilePaths = deletable.Select(f => f.FullPath).ToList();
+            AddAiSection(ref y, "AKILLI ÖNCELİK PLANI", Theme.Accent);
+            AddAiInsight(ref y, "1. Güvenli temizlik",
+                deletable.Count > 0 ? deletable.Count + " dosya kesin düşük riskli görünüyor." : "Şu an kesin güvenli temizlik adayı yok.",
+                FormatSize(deletableSize), deletable.Count > 0 ? Theme.Success : Theme.SubText);
+            AddAiInsight(ref y, "2. Kopya kontrolü",
+                duplicateGroups.Count > 0 ? duplicateGroups.Count + " olası grup var; silmeden önce içeriği doğrulayın." : "Belirgin olası kopya bulunmadı.",
+                FormatSize(duplicateWaste), duplicateGroups.Count > 0 ? Theme.Warning : Theme.SubText);
+            AddAiInsight(ref y, "3. Arşivle / taşı",
+                archiveCandidates.Count > 0 ? "Eski büyük medya ve arşiv dosyaları ayrı diske alınabilir." : "Arşivlemeye uygun büyük eski dosya az.",
+                FormatSize(archiveSize), archiveCandidates.Count > 0 ? Theme.Accent2 : Theme.SubText);
+            AddAiInsight(ref y, "4. Dokunma uyarısı",
+                protectedLarge.Count > 0 ? "Sistem/uygulama klasörlerinde büyük dosyalar var; otomatik silinmez." : "Riskli sistem dosyası uyarısı yok.",
+                FormatSize(protectedSize), protectedLarge.Count > 0 ? Theme.Danger : Theme.SubText);
+            y += 8;
+
+            List<FileNode> smartCandidates = deletable
+                .Where(f => f.Score >= 45)
+                .Take(8).ToList();
+            if (smartCandidates.Count > 0)
+            {
+                AddAiSection(ref y, "AKILLI TEMİZLİK İNDEKSİ  /  risk düşük, kazanç yüksek", Theme.Success);
+                foreach (FileNode f in smartCandidates)
+                    AddAiInsight(ref y, f.Name,
+                        CleanupRules.CleanupReason(f) + "  |  " + CompactPath(!string.IsNullOrEmpty(f.DirectoryPath) ? f.DirectoryPath : PathText.GetDirectoryName(f.FullPath), 42),
+                        "Skor " + f.Score + " / " + FormatSize(f.Size), Theme.Success);
+                y += 10;
+            }
 
             if (deletable.Count > 0)
             {
-                AddAiSection(ref y, "SİLİNEBİLECEK  /  " + deletable.Count + " dosya  /  " + FormatSize(deletableSize) + " kazanc", Theme.Danger);
+                AddAiSection(ref y, "KESİN GÜVENLİ TEMİZLİK  /  " + deletable.Count + " dosya  /  " + FormatSize(deletableSize), Theme.Success);
+                AddAiNote(ref y, "Kalıcı silme yapılmaz; dosyalar Geri Dönüşüm Kutusu'na taşınır. Şüpheli dosyalar bu listeye alınmaz.");
 
                 Button deleteAllBtn = new Button();
                 deleteAllBtn.Text = LicenseManager.HasFeature(currentLicense, LicenseFeature.BulkDelete)
-                    ? "Tümünü Sil  -  " + FormatSize(deletableSize) + " Alan Aç"
-                    : "Tümünü Sil  (Enterprise)";
+                    ? "Geri Dönüşüm Kutusuna Taşı  -  " + FormatSize(deletableSize)
+                    : "Toplu Taşıma  (Kurumsal)";
                 deleteAllBtn.Location = new Point(12, y);
                 deleteAllBtn.Size = new Size(420, 34);
-                deleteAllBtn.BackColor = Theme.Danger;
-                deleteAllBtn.ForeColor = Color.White;
+                deleteAllBtn.BackColor = Theme.Success;
+                deleteAllBtn.ForeColor = Theme.IsDark ? Color.FromArgb(8, 12, 18) : Color.White;
                 deleteAllBtn.FlatStyle = FlatStyle.Flat;
                 deleteAllBtn.FlatAppearance.BorderSize = 0;
                 deleteAllBtn.Font = new Font("Segoe UI", 9, FontStyle.Bold);
@@ -2641,15 +3780,41 @@ namespace AdvancedDiskAnalyzer
                 y += 42;
 
                 foreach (var f in deletable.Take(12))
-                    AddAiRow(ref y, f.Name, FormatSize(f.Size), Theme.Danger);
+                    AddAiInsight(ref y, f.Name, CleanupRules.CleanupReason(f) + "  |  " + CleanupRules.CleanupConfidence(f), FormatSize(f.Size), Theme.Success);
                 if (deletable.Count > 12)
                     AddAiNote(ref y, "... ve " + (deletable.Count - 12) + " dosya daha");
                 y += 10;
             }
 
-            var bigOld = allFiles
-                .Where(f => f.Size > 50 * 1024 * 1024 && f.LastModified < DateTime.Now.AddYears(-1))
-                .OrderByDescending(f => f.Size).Take(10).ToList();
+            if (cautiousCleanup.Count > 0)
+            {
+                AddAiSection(ref y, "İNCELEMELİ TEMİZLİK  /  otomatik silme yok", Theme.Warning);
+                foreach (FileNode f in cautiousCleanup)
+                    AddAiInsight(ref y, f.Name,
+                        CleanupRules.CleanupReason(f) + "  |  " + CleanupRules.CleanupConfidence(f),
+                        FormatSize(f.Size), Theme.Warning);
+                y += 10;
+            }
+
+            if (archiveCandidates.Count > 0)
+            {
+                AddAiSection(ref y, "ARŞİVLE / TAŞI  /  " + archiveCandidates.Count + " aday  /  " + FormatSize(archiveSize), Theme.Accent2);
+                foreach (FileNode f in archiveCandidates)
+                    AddAiInsight(ref y, f.Name,
+                        CleanupRules.ArchiveReason(f) + "  |  Son kullanım: " + f.LastModified.ToString("yyyy-MM-dd"),
+                        FormatSize(f.Size), Theme.Accent2);
+                y += 10;
+            }
+
+            if (reviewCandidates.Count > 0)
+            {
+                AddAiSection(ref y, "İNCELEME GEREKTİREN DOSYALAR  /  otomatik silme yok", Theme.Warning);
+                foreach (FileNode f in reviewCandidates)
+                    AddAiInsight(ref y, f.Name,
+                        "Skor yüksek ama güvenli silme sinyali zayıf; kullanıcı kararı gerekir.",
+                        "Skor " + f.Score + " / " + FormatSize(f.Size), Theme.Warning);
+                y += 10;
+            }
 
             if (bigOld.Count > 0)
             {
@@ -2659,35 +3824,31 @@ namespace AdvancedDiskAnalyzer
                 y += 10;
             }
 
-            List<DuplicateGroup> duplicateGroups = BuildDuplicateGroups(allFiles);
-            long duplicateWaste = duplicateGroups.Sum(g => g.WastedSize);
             if (duplicateGroups.Count > 0)
             {
                 AddAiSection(ref y, "OLASI KOPYALAR  /  " + duplicateGroups.Count + " grup  /  " + FormatSize(duplicateWaste) + " tekrar alan", Theme.Warning);
                 foreach (DuplicateGroup group in duplicateGroups.Take(8))
                 {
-                    AddAiRow(ref y, group.Name,
-                        group.Files.Count + " adet  /  " + FormatSize(group.WastedSize),
-                        Theme.Warning);
+                    AddAiInsight(ref y, group.Name,
+                        group.Files.Count + " dosya, aynı ad ve boyut. İçerik doğrulaması önerilir.",
+                        FormatSize(group.WastedSize), Theme.Warning);
                 }
                 if (duplicateGroups.Count > 8)
                     AddAiNote(ref y, "... ve " + (duplicateGroups.Count - 8) + " kopya grubu daha");
                 y += 10;
             }
 
-            var topLargest = allFiles.OrderByDescending(f => f.Size).Take(6).ToList();
             if (topLargest.Count > 0)
             {
-                AddAiSection(ref y, "TOP ALAN HIRSIZLARI", Theme.Accent2);
+                AddAiSection(ref y, "EN ÇOK ALAN KULLANANLAR", Theme.Accent2);
                 foreach (FileNode f in topLargest)
                     AddAiRow(ref y, f.Name, FormatSize(f.Size), Theme.Accent2);
                 y += 10;
             }
 
-            var bigDirs = root.SubDirectories.OrderByDescending(d => d.Size).Take(6).ToList();
             if (bigDirs.Count > 0)
             {
-                AddAiSection(ref y, "EN BUYUK KLASORLER", Theme.Accent);
+                AddAiSection(ref y, "EN BÜYÜK KLASÖRLER", Theme.Accent);
                 foreach (var d in bigDirs)
                 {
                     double pct = d.Size / (double)root.Size * 100.0;
@@ -2698,9 +3859,14 @@ namespace AdvancedDiskAnalyzer
 
             AddAiSection(ref y, "ÖZET", Theme.Success);
             AddAiRow(ref y, "Toplam boyut", FormatSize(root.Size), Theme.Success);
+            AddAiRow(ref y, "Diskte kaplanan", FormatSize(root.AllocatedSize), Theme.Success);
             AddAiRow(ref y, "Toplam dosya", string.Format("{0:N0}", allFiles.Count), Theme.Success);
             AddAiRow(ref y, "Temizlenebilir", FormatSize(deletableSize), Theme.Success);
             AddAiRow(ref y, "Tekrar alan", FormatSize(duplicateWaste), Theme.Success);
+            AddAiRow(ref y, "Arşiv adayı", FormatSize(archiveSize), Theme.Success);
+            AddAiRow(ref y, "İnceleme alanı", FormatSize(reviewSize), Theme.Warning);
+            if (duplicateHardLinksSkipped > 0)
+                AddAiRow(ref y, "Hard link düzeltmesi", string.Format("{0:N0} çift sayım önlendi", duplicateHardLinksSkipped), Theme.Warning);
             if (isNetworkDrive)
                 AddAiRow(ref y, "Tarama türü", "Ağ Sürücüsü", Theme.Warning);
 
@@ -2743,12 +3909,60 @@ namespace AdvancedDiskAnalyzer
             Label nl = new Label();
             nl.AutoSize = false; nl.Width = 275; nl.Height = 20; nl.Location = new Point(18, y);
             nl.Text = name; nl.Font = new Font("Segoe UI", 9); nl.ForeColor = Theme.Text;
+            nl.AutoEllipsis = true;
             aiPanel.Controls.Add(nl);
             Label vl = new Label();
             vl.AutoSize = false; vl.Width = 165; vl.Height = 20; vl.Location = new Point(295, y);
             vl.Text = value; vl.Font = new Font("Segoe UI", 9, FontStyle.Bold); vl.ForeColor = accent;
+            vl.AutoEllipsis = true;
             aiPanel.Controls.Add(vl);
             y += 22;
+        }
+
+        private void AddAiInsight(ref int y, string title, string detail, string value, Color accent)
+        {
+            Label titleLabel = new Label();
+            titleLabel.AutoSize = false;
+            titleLabel.Width = 270;
+            titleLabel.Height = 20;
+            titleLabel.Location = new Point(18, y);
+            titleLabel.Text = title;
+            titleLabel.Font = new Font("Segoe UI", 9, FontStyle.Bold);
+            titleLabel.ForeColor = Theme.Text;
+            titleLabel.AutoEllipsis = true;
+            aiPanel.Controls.Add(titleLabel);
+
+            Label valueLabel = new Label();
+            valueLabel.AutoSize = false;
+            valueLabel.Width = 150;
+            valueLabel.Height = 20;
+            valueLabel.Location = new Point(292, y);
+            valueLabel.Text = value;
+            valueLabel.Font = new Font("Segoe UI", 8, FontStyle.Bold);
+            valueLabel.ForeColor = accent;
+            valueLabel.TextAlign = ContentAlignment.MiddleRight;
+            valueLabel.AutoEllipsis = true;
+            aiPanel.Controls.Add(valueLabel);
+
+            Label detailLabel = new Label();
+            detailLabel.AutoSize = false;
+            detailLabel.Width = 420;
+            detailLabel.Height = 19;
+            detailLabel.Location = new Point(18, y + 19);
+            detailLabel.Text = detail;
+            detailLabel.Font = new Font("Segoe UI", 8);
+            detailLabel.ForeColor = Theme.SubText;
+            detailLabel.AutoEllipsis = true;
+            aiPanel.Controls.Add(detailLabel);
+
+            y += 43;
+        }
+
+        private double CleanupPriority(FileNode file)
+        {
+            if (file == null) return 0.0;
+            double mb = file.Size / (1024.0 * 1024.0);
+            return (file.Score * 12.0) + Math.Min(mb, 4096.0) + (CleanupRules.LocationScore(file.FullPath) * 500.0);
         }
 
         private void AddAiNote(ref int y, string text)
@@ -2766,14 +3980,14 @@ namespace AdvancedDiskAnalyzer
 
             if (rootNode == null)
             {
-                MessageBox.Show("önce bir klasör taraması yapın.", "PDF Rapor", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Önce bir klasör taraması yapın.", "PDF Rapor", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
             SaveFileDialog dialog = new SaveFileDialog();
             dialog.Title = "PDF Rapor Kaydet";
             dialog.Filter = "PDF dosyası (*.pdf)|*.pdf";
-            dialog.FileName = "AdvancedDiskAnalyzer_Report_" + DateTime.Now.ToString("yyyyMMdd_HHmm") + ".pdf";
+            dialog.FileName = "AdvancedDiskAnalyzer_Rapor_" + DateTime.Now.ToString("yyyyMMdd_HHmm") + ".pdf";
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
             try
@@ -2821,7 +4035,7 @@ namespace AdvancedDiskAnalyzer
                 {
                     using (Font font = new Font("Segoe UI", 11))
                     using (Brush brush = new SolidBrush(Color.FromArgb(90, 95, 120)))
-                        g.DrawString("Grafik için veri yok.", font, brush, 34, 80);
+                        g.DrawString("Grafik icin veri yok.", font, brush, 34, 80);
                     return bmp;
                 }
 
@@ -2874,26 +4088,42 @@ namespace AdvancedDiskAnalyzer
             return text.Substring(0, Math.Max(0, maxLength - 3)) + "...";
         }
 
+        // ═══════════════════════════════════════════════════════════════════
+        // BÖLÜM: MODEL GÜNCELLEME VE TEMİZLİK ETKİLERİ (Veri Senkronizasyonu)
+        // ═══════════════════════════════════════════════════════════════════
+        // Amacı  : Silinen dosyaları bellek içi ağaç veri modelinden düşer ve
+        //          pasta grafik, treemap ile dashboard metriklerini anlık yeniler.
+        // Yöntemi: Silinen dosya setini (deletedPaths) ağaçta bulur ve siler,
+        //          ardından RebuildDirectoryTotals metodu ile tüm üst dizinlerin
+        //          boyutlarını, dosya sayılarını ve hard link düzeltmelerini
+        //          özyinelemeli (recursive) olarak yeniden hesaplar.
+        // ═══════════════════════════════════════════════════════════════════
         private void DeleteAllBtn_Click(object sender, EventArgs e)
         {
             if (!EnsureFeature(LicenseFeature.BulkDelete, "Toplu silme"))
                 return;
 
             int count = deletableFilePaths.Count; if (count == 0) return;
+            if (isNetworkDrive)
+            {
+                MessageBox.Show("Ağ sürücülerinde güvenli toplu silme kapalıdır.\n\nAğ paylaşımlarında Geri Dönüşüm Kutusu garantili değildir; dosyaları tek tek inceleyin.",
+                    "Güvenli Silme", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
 
-            string warning = isNetworkDrive
-                ? count + " dosya AĞ SÜRÜCÜSÜNDEN silinecek. Geri alınamaz!\n\nSunucu: " + networkDriveInfo
-                : count + " dosya silinecek. Geri alınamaz!";
+            string warning = count + " kesin düşük riskli dosya Geri Dönüşüm Kutusu'na taşınacak.\n\n" +
+                "Kalıcı silme yapılmaz. Emin değilseniz önce listeden birkaç dosyayı Explorer'da açıp kontrol edin.";
 
-            if (MessageBox.Show(warning, "Onay", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            if (MessageBox.Show(warning, "Güvenli Temizlik Onayı", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
             int deleted = 0; long freed = 0;
             HashSet<string> deletedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (string path in deletableFilePaths.ToList())
             {
                 try
                 {
-                    long sz = File.Exists(path) ? new FileInfo(path).Length : 0;
-                    File.Delete(path);
+                    FileNode modelFile = FindFileNode(rootNode, path);
+                    long sz = EstimateFreedSize(modelFile, path);
+                    MoveFileToRecycleBin(path);
                     deleted++;
                     freed += sz;
                     deletedPaths.Add(path);
@@ -2903,7 +4133,7 @@ namespace AdvancedDiskAnalyzer
             deletableFilePaths.Clear();
             if (deletedPaths.Count > 0)
                 ApplyDeletedFilesToModel(deletedPaths, freed);
-            string msg = deleted + " dosya silindi, " + FormatSize(freed) + " kazanıldı.";
+            string msg = deleted + " dosya Geri Dönüşüm Kutusu'na taşındı, " + FormatSize(freed) + " kazanıldı.";
             MessageBox.Show(msg, "Tamamlandı", MessageBoxButtons.OK, MessageBoxIcon.Information);
             statusLabel.Text = msg;
         }
@@ -2919,7 +4149,10 @@ namespace AdvancedDiskAnalyzer
             if (rootNode != null)
             {
                 RemoveDeletedFilesFromTree(rootNode, deletedPaths);
+                RebuildDirectoryTotals(rootNode);
                 totalFilesFound = CountFiles(rootNode);
+                totalBytesScanned = rootNode.Size;
+                totalAllocatedScanned = rootNode.AllocatedSize;
                 liveCountLabel.Text = string.Format("{0:N0} dosya", totalFilesFound);
 
                 DirectoryNode visualNode = currentSelectedDirectory != null ? currentSelectedDirectory : rootNode;
@@ -2936,9 +4169,10 @@ namespace AdvancedDiskAnalyzer
                 if (treeView.Nodes.Count > 0) treeView.Nodes[0].Expand();
                 treeView.EndUpdate();
 
-                statTotal.Text = "Toplam: " + FormatSize(rootNode.Size);
+                string totalDisplay = FormatLogicalAllocated(rootNode);
+                statTotal.Text = "Toplam: " + totalDisplay;
                 statFiles.Text = string.Format("{0:N0} dosya", totalFilesFound);
-                UpdateSummaryCards(FormatSize(rootNode.Size), string.Format("{0:N0}", totalFilesFound), null, selectedScanPath);
+                UpdateSummaryCards(totalDisplay, string.Format("{0:N0}", totalFilesFound), null, selectedScanPath);
             }
 
             if (freedBytes > 0)
@@ -2965,29 +4199,112 @@ namespace AdvancedDiskAnalyzer
             }
         }
 
-        private long RemoveDeletedFilesFromTree(DirectoryNode node, HashSet<string> deletedPaths)
+        private void RemoveDeletedFilesFromTree(DirectoryNode node, HashSet<string> deletedPaths)
         {
-            if (node == null) return 0;
-            long size = 0;
+            if (node == null) return;
             for (int i = node.Files.Count - 1; i >= 0; i--)
             {
                 FileNode file = node.Files[i];
                 if (file != null && deletedPaths.Contains(file.FullPath))
                     node.Files.RemoveAt(i);
-                else if (file != null)
-                    size += file.Size;
             }
 
             foreach (DirectoryNode sub in node.SubDirectories)
-                size += RemoveDeletedFilesFromTree(sub, deletedPaths);
+                RemoveDeletedFilesFromTree(sub, deletedPaths);
+        }
 
-            node.Size = size;
-            return size;
+        private void RebuildDirectoryTotals(DirectoryNode node)
+        {
+            HashSet<string> hardLinks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int skipped = 0;
+            RebuildDirectoryTotals(node, hardLinks, ref skipped);
+            duplicateHardLinksSkipped = skipped;
+        }
+
+        private void RebuildDirectoryTotals(DirectoryNode node, HashSet<string> hardLinks, ref int skipped)
+        {
+            if (node == null) return;
+            long logical = 0;
+            long allocated = 0;
+            int fileCount = 0;
+            bool partial = false;
+
+            foreach (DirectoryNode sub in node.SubDirectories)
+            {
+                RebuildDirectoryTotals(sub, hardLinks, ref skipped);
+                logical += sub.Size;
+                allocated += sub.AllocatedSize;
+                fileCount += sub.FileCount > 0 ? sub.FileCount : sub.Files.Count;
+                if (sub.FilesArePartial) partial = true;
+            }
+
+            foreach (FileNode file in node.Files)
+            {
+                if (file == null) continue;
+                file.CountedSize = file.Size;
+                file.CountedAllocatedSize = file.AllocatedSize > 0 ? file.AllocatedSize : file.Size;
+                if (hardLinkAccuracyEnabled && file.HardLinkCount > 1 && !string.IsNullOrEmpty(file.FileIdKey))
+                {
+                    if (!hardLinks.Add(file.FileIdKey))
+                    {
+                        file.SharedHardLink = true;
+                        file.CountedSize = 0;
+                        file.CountedAllocatedSize = 0;
+                        skipped++;
+                    }
+                    else
+                    {
+                        file.SharedHardLink = false;
+                    }
+                }
+                logical += file.CountedSize;
+                allocated += file.CountedAllocatedSize;
+                fileCount++;
+            }
+
+            node.Size = logical;
+            node.AllocatedSize = allocated;
+            node.FileCount = fileCount;
+            node.FilesArePartial = partial;
+        }
+
+        private FileNode FindFileNode(DirectoryNode node, string fullPath)
+        {
+            if (node == null || string.IsNullOrEmpty(fullPath)) return null;
+            foreach (FileNode file in node.Files)
+                if (file != null && string.Equals(file.FullPath, fullPath, StringComparison.OrdinalIgnoreCase))
+                    return file;
+            foreach (DirectoryNode sub in node.SubDirectories)
+            {
+                FileNode found = FindFileNode(sub, fullPath);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        private long EstimateFreedSize(FileNode file, string path)
+        {
+            if (file != null)
+            {
+                if (file.HardLinkCount > 1) return 0;
+                return file.AllocatedSize > 0 ? file.AllocatedSize : file.Size;
+            }
+            try { return File.Exists(path) ? new FileInfo(path).Length : 0; }
+            catch { return 0; }
+        }
+
+        private void MoveFileToRecycleBin(string path)
+        {
+            if (NativeFileApi.MoveToRecycleBin(path))
+                return;
+            throw new IOException("Dosya Geri Dönüşüm Kutusu'na taşınamadı. Kalıcı silme yapılmadı.");
         }
 
         private int CountFiles(DirectoryNode node)
         {
             if (node == null) return 0;
+            if (node.FileCount > 0 || node.FilesArePartial)
+                return node.FileCount;
             int count = node.Files.Count;
             foreach (DirectoryNode sub in node.SubDirectories)
                 count += CountFiles(sub);
@@ -3026,32 +4343,40 @@ namespace AdvancedDiskAnalyzer
         }
 
         // =====================================================================
-        // SURUCU TIPI ALGILAMA
+        // SURUCU TIPI ALGILAMA VE YARDIMCI METOTLAR
+        // =====================================================================
+        // Amacı  : Disk türünün (M.2/SSD veya HDD) tespit edilmesini sağlar. Bu tespit,
+        //          tarama motorunun paralel iş parçacığı (paralel thread) miktarını dinamik
+        //          olarak optimize etmek için kullanılır (HDD'de kafa hareketlerini azaltmak
+        //          için düşük paralellik, SSD'de ise tam paralel mod).
+        // Yöntemi: WMI (Windows Management Instrumentation) altyapısı üzerinden Win32_DiskDrive
+        //          ve MSFT_PhysicalDisk sınıfları sorgulanır. Sorgu sonuçları pahalı disk I/O
+        //          ve IPC operasyonlarından kaçınmak amacıyla 'driveTypeCache' sözlüğünde önbelleğe alınır.
         // =====================================================================
 
+        /// <summary>
+        /// Belirtilen dosya yolunun bağlı olduğu mantıksal sürücünün SSD veya HDD olduğunu tespit eder.
+        /// Elde edilen sonucu durum çubuğuna yansıtır ve önbelleğe (cache) yazar.
+        /// </summary>
         private void DetectDriveType(string path)
         {
             try
             {
                 string root = Path.GetPathRoot(path);
                 if (string.IsNullOrEmpty(root)) root = path;
+                root = root.TrimEnd('\\');
                 bool cached;
                 if (driveTypeCache.TryGetValue(root, out cached))
                 {
                     isSSD = cached;
-                    statusLabel.Text = isSSD ? "M.2/SSD - Tam paralel mod" : "HDD - Güvenli mod";
+                    statusLabel.Text = isSSD ? "M.2/SSD - tam paralel mod" : "HDD - güvenli mod";
                     return;
                 }
 
                 isSSD = false;
-                ManagementObjectSearcher s = new ManagementObjectSearcher("SELECT MediaType FROM Win32_DiskDrive");
-                foreach (ManagementObject d in s.Get())
-                {
-                    string mt = d["MediaType"] as string;
-                    if (mt != null && mt.Contains("SSD")) { isSSD = true; break; }
-                }
+                isSSD = DetectLogicalDriveIsSsd(root);
                 driveTypeCache[root] = isSSD;
-                statusLabel.Text = isSSD ? "M.2/SSD - Tam paralel mod" : "HDD - Güvenli mod";
+                statusLabel.Text = isSSD ? "M.2/SSD - tam paralel mod" : "HDD - güvenli mod";
             }
             catch
             {
@@ -3060,6 +4385,67 @@ namespace AdvancedDiskAnalyzer
             }
         }
 
+        /// <summary>
+        /// WMI sorguları aracılığıyla mantıksal sürücünün altındaki fiziksel diskin özelliklerini denetler.
+        /// MediaType, Model, Caption ve MSFT_PhysicalDisk sınıfındaki donanımsal öznitelikleri analiz eder.
+        /// </summary>
+        private bool DetectLogicalDriveIsSsd(string driveRoot)
+        {
+            try
+            {
+                string escapedDrive = driveRoot.Replace("\\", "\\\\").Replace("'", "\\'");
+                ManagementObject logicalDisk = new ManagementObject("Win32_LogicalDisk.DeviceID='" + escapedDrive + "'");
+                foreach (ManagementObject partition in logicalDisk.GetRelated("Win32_DiskPartition"))
+                {
+                    foreach (ManagementObject disk in partition.GetRelated("Win32_DiskDrive"))
+                    {
+                        if (LooksLikeSsd(disk["MediaType"] as string) ||
+                            LooksLikeSsd(disk["Model"] as string) ||
+                            LooksLikeSsd(disk["Caption"] as string))
+                            return true;
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                // Windows 8 ve üzeri modern işletim sistemleri için MSFT_PhysicalDisk kontrolü
+                ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                    "root\\Microsoft\\Windows\\Storage",
+                    "SELECT MediaType, FriendlyName FROM MSFT_PhysicalDisk");
+                int diskCount = 0;
+                bool anySsd = false;
+                foreach (ManagementObject disk in searcher.Get())
+                {
+                    diskCount++;
+                    object media = disk["MediaType"];
+                    int mediaType = media == null ? 0 : Convert.ToInt32(media, CultureInfo.InvariantCulture);
+                    // MediaType 4 = SSD
+                    if (mediaType == 4 || LooksLikeSsd(disk["FriendlyName"] as string))
+                        anySsd = true;
+                }
+                if (diskCount == 1 && anySsd)
+                    return true;
+            }
+            catch { }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Disk model ismi veya medya tipi verisinde katı hal sürücüsü (SSD) işaretçilerini arar.
+        /// </summary>
+        private bool LooksLikeSsd(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return false;
+            string v = value.ToUpperInvariant();
+            return v.IndexOf("SSD") >= 0 || v.IndexOf("NVME") >= 0 || v.IndexOf("NVM") >= 0 || v.IndexOf("M.2") >= 0;
+        }
+
+        /// <summary>
+        /// Byte cinsinden dosya boyutunu okunabilir (human-readable) KB, MB veya GB biçimine dönüştürür.
+        /// </summary>
         private string FormatSize(long size)
         {
             if (size > 1024L * 1024 * 1024) return (size / (1024.0 * 1024 * 1024)).ToString("F2") + " GB";
@@ -3070,9 +4456,23 @@ namespace AdvancedDiskAnalyzer
     }
 
     // =====================================================================
-    // MODERN SCROLLBAR
+    // BÖLÜM: ÖZEL KULLANICI ARAYÜZÜ (UI) KONTROLLERİ VE TEMA UYUMLULUĞU
+    // =====================================================================
+    // Amacı  : Windows Forms'un klasik ve demode duran standart kontrolleri yerine,
+    //          modern donanım ivmeli çizim yöntemleri (DoubleBuffered, UserPaint)
+    //          kullanılarak tasarlanmış, akıcı (smooth) ve premium görünümlü
+    //          arayüz bileşenleri (custom controls) sağlar.
+    // İçerik : - MetricCardPanel    : Vurgulu sol şerit çizgisine sahip kart paneli.
+    //          - SmoothListView     : Standart Windows kaydırma çubukları gizlenmiş liste.
+    //          - SmoothScrollPanel  : Akıcı kaydırma yeteneğine sahip panel.
+    //          - ThemedTabControl   : Özel çizim (OwnerDrawFixed) sekmeler.
+    //          - DarkTitleBar       : Windows DWM API ile pencere başlığını koyu yapma.
+    //          - ModernScrollBar    : Tamamen GDI+ ile el ile çizilen kaydırma çubuğu.
     // =====================================================================
 
+    /// <summary>
+    /// Dashboard istatistiklerinin gösterildiği, sol kenarında renkli accent çizgisi barındıran kart bileşeni.
+    /// </summary>
     public class MetricCardPanel : Panel
     {
         public MetricCardPanel()
@@ -3096,6 +4496,10 @@ namespace AdvancedDiskAnalyzer
         }
     }
 
+    /// <summary>
+    /// Klasik Windows 3D tarzı kaydırma çubuklarını (WS_VSCROLL, WS_HSCROLL) Win32 API ile devredışı bırakarak
+    /// yerine özel ModernScrollBar yerleştirilmesini sağlayan akıcı ListView türevidir.
+    /// </summary>
     public class SmoothListView : ListView
     {
         private const int WM_PAINT = 0x000F;
@@ -3113,6 +4517,7 @@ namespace AdvancedDiskAnalyzer
                           ControlStyles.ResizeRedraw, true);
             try
             {
+                // Yansıma (Reflection) ile korumalı DoubleBuffered özelliğini aktif ederek flicker (titreme) efektini önleriz.
                 System.Reflection.PropertyInfo prop = typeof(Control).GetProperty(
                     "DoubleBuffered",
                     System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
@@ -3130,11 +4535,15 @@ namespace AdvancedDiskAnalyzer
         protected override void WndProc(ref Message m)
         {
             base.WndProc(ref m);
+            // Listede herhangi bir çizim veya boyutlama olayında yerleşik scrollbar'ları zorla gizleriz
             if (m.Msg == WM_PAINT || m.Msg == WM_SIZE || m.Msg == WM_NCPAINT ||
                 m.Msg == WM_VSCROLL || m.Msg == WM_HSCROLL || m.Msg == WM_MOUSEWHEEL || m.Msg == WM_MOUSEHWHEEL)
                 HideChrome();
         }
 
+        /// <summary>
+        /// P/Invoke aracılığıyla ListView nesnesinin pencerelendirme (style) bitlerinden kaydırma çubuğu bayraklarını temizler.
+        /// </summary>
         public void HideChrome()
         {
             try
@@ -3152,6 +4561,9 @@ namespace AdvancedDiskAnalyzer
         }
     }
 
+    /// <summary>
+    /// Klasik kaydırma çubukları gizlenmiş, ModernScrollBar ile entegre edilebilen akıcı arayüz paneli.
+    /// </summary>
     public class SmoothScrollPanel : Panel
     {
         private const int WM_PAINT = 0x000F;
@@ -3200,6 +4612,10 @@ namespace AdvancedDiskAnalyzer
         }
     }
 
+    /// <summary>
+    /// GDI+ OwnerDrawFixed çizim yöntemi kullanılarak tasarlanmış,
+    /// seçili sekme renklerini ve kenarlıkları aktif tema renklerine göre boyayan özel TabControl.
+    /// </summary>
     public class ThemedTabControl : TabControl
     {
         public ThemedTabControl()
@@ -3221,22 +4637,45 @@ namespace AdvancedDiskAnalyzer
             using (SolidBrush brush = new SolidBrush(Theme.Bg))
                 e.Graphics.FillRectangle(brush, content);
 
+            // Tab başlık alanının hemen altına ince bir sınır çizgisi çiz
+            int headerHeight = this.ItemSize.Height;
+            using (Pen borderPen = new Pen(Theme.Border))
+            {
+                e.Graphics.DrawLine(borderPen, 0, headerHeight, this.Width, headerHeight);
+            }
+
             for (int i = 0; i < this.TabPages.Count; i++)
             {
                 Rectangle r = this.GetTabRect(i);
                 bool selected = i == this.SelectedIndex;
-                Color bg = selected ? Theme.Accent : Theme.Card;
-                Color fg = selected ? (Theme.IsDark ? Color.FromArgb(10, 10, 20) : Color.White) : Theme.SubText;
+                
+                // Modern düz ve sekme tasarımı (VS Code esintili)
+                Color bg = selected ? Theme.Surface : Theme.Bg;
+                Color fg = selected ? Theme.Accent : Theme.SubText;
 
                 using (SolidBrush brush = new SolidBrush(bg))
                     e.Graphics.FillRectangle(brush, r);
-                using (Pen pen = new Pen(selected ? Theme.Accent : Theme.Border))
-                    e.Graphics.DrawRectangle(pen, r.X, r.Y, r.Width - 1, r.Height - 1);
+
+                // Sekme başlıklarının sağ tarafına dikey ayrım çizgisi
+                using (Pen sepPen = new Pen(Theme.Border))
+                {
+                    e.Graphics.DrawLine(sepPen, r.Right - 1, r.Top, r.Right - 1, r.Bottom);
+                }
+
+                // Seçili sekmenin üst kısmına 3px kalınlığında vurgu çizgisi çiz
+                if (selected)
+                {
+                    using (SolidBrush accentBrush = new SolidBrush(Theme.Accent))
+                    {
+                        e.Graphics.FillRectangle(accentBrush, r.X, r.Y, r.Width - 1, 3);
+                    }
+                }
 
                 TextRenderer.DrawText(e.Graphics, this.TabPages[i].Text.Trim(), this.Font, r, fg,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
             }
 
+            // İçerik alanının etrafına sınır çizgisi çiz
             using (Pen pen = new Pen(Theme.Border))
                 e.Graphics.DrawRectangle(pen, content.X, content.Y, content.Width - 1, content.Height - 1);
         }
@@ -3248,6 +4687,30 @@ namespace AdvancedDiskAnalyzer
         }
     }
 
+    /// <summary>
+    /// Windows UXTheme kitaplığını kullanarak TreeView ve ListView kontrollerini
+    /// modern Windows Explorer/VS Code stiline (chevron okları, yumuşak seçim efektleri vb.) kavuşturur.
+    /// </summary>
+    public static class WindowThemeHelper
+    {
+        [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+        private static extern int SetWindowTheme(IntPtr hWnd, string pszSubAppName, string pszSubIdList);
+
+        public static void ApplyExplorerTheme(Control ctrl)
+        {
+            if (ctrl != null)
+            {
+                // Handle zorla oluşturularak temanın uygulanması garanti edilir
+                IntPtr handle = ctrl.Handle;
+                try { SetWindowTheme(handle, "explorer", null); } catch { }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Masaüstü Pencere Yöneticisi (Desktop Window Manager - DWM) özniteliklerini
+    /// P/Invoke kullanarak değiştirip, Windows OS başlık çubuğunu koyu (Dark Mode) temaya uyarlar.
+    /// </summary>
     public static class DarkTitleBar
     {
         [DllImport("dwmapi.dll")]
@@ -3259,14 +4722,20 @@ namespace AdvancedDiskAnalyzer
             int value = dark ? 1 : 0;
             try
             {
+                // DWMWA_USE_IMMERSIVE_DARK_MODE attribute = 20 (Windows 11 / Windows 10 build 18985 ve üzeri)
                 int result = DwmSetWindowAttribute(handle, 20, ref value, sizeof(int));
                 if (result != 0)
+                    // Windows 10 eski sürümler için fallback attribute = 19
                     DwmSetWindowAttribute(handle, 19, ref value, sizeof(int));
             }
             catch { }
         }
     }
 
+    /// <summary>
+    /// ListView güncellemelerinde ekran titremesini engellemek amacıyla
+    /// WM_SETREDRAW mesajını kullanarak pencere çizimini geçici olarak askıya alır.
+    /// </summary>
     public static class NativeListViewPaint
     {
         private const int WM_SETREDRAW = 0x000B;
@@ -3285,6 +4754,9 @@ namespace AdvancedDiskAnalyzer
         }
     }
 
+    /// <summary>
+    /// Win32 API pencerelendirme sabitleri ve User32.dll kütüphane çağrı tanımları.
+    /// </summary>
     public static class NativeMethods
     {
         public const int GWL_STYLE = -16;
@@ -3304,6 +4776,10 @@ namespace AdvancedDiskAnalyzer
         public static extern bool ShowScrollBar(IntPtr hWnd, int wBar, bool bShow);
     }
 
+    /// <summary>
+    /// ListView, TreeView veya ScrollableControl nesnelerine bağlanarak çalışan,
+    /// kaydırma durumlarını GDI+ çizimiyle modern bir 'şerit kaydırıcı' olarak sunan UI kontrolü.
+    /// </summary>
     public class ModernScrollBar : Panel
     {
         private Control target;
@@ -3690,9 +5166,23 @@ namespace AdvancedDiskAnalyzer
     }
 
     // =====================================================================
-    // OFFLINE LISANS ALTYAPISI
+    // BÖLÜM: ÇEVRİMDIŞI LİSANS ALTYAPISI VE RSA DOĞRULAMA (ASİMETRİK ŞİFRELEME)
+    // =====================================================================
+    // Amacı  : Uygulamanın Pro ve Kurumsal (Enterprise) sürümlerinin lisans
+    //          geçerliliğini internet bağlantısı olmaksızın asimetrik şifreleme
+    //          (RSA-2048) kullanarak yerel olarak doğrular.
+    // Yöntemi: Lisans anahtarı; plan, şirket adı, e-posta, geçerlilik tarihi,
+    //          kullanıcı sayısı ve donanım kimliği (Hardware ID) bilgilerini içeren
+    //          bir metin katarının (payload) ve bu katarın SHA-256 ile imzalanmış
+    //          özel dijital imzasının (Base64 kodlanmış) birleşiminden oluşur.
+    //          Lisans sunucusundaki özel anahtarla (private key) imzalanmış bu veri,
+    //          programda sertifikalı açık anahtarla (public key) VerifyData yöntemiyle
+    //          çift sayım ve kurcalamaya (tampering) karşı kesin zamanlı doğrulanır.
     // =====================================================================
 
+    /// <summary>
+    /// Lisans paket planlarını belirler.
+    /// </summary>
     public enum LicensePlan
     {
         Free,
@@ -3700,6 +5190,9 @@ namespace AdvancedDiskAnalyzer
         Enterprise
     }
 
+    /// <summary>
+    /// Plana göre erişilebilen modül ve özellikleri (feature flag) listeler.
+    /// </summary>
     public enum LicenseFeature
     {
         PdfReport,
@@ -3708,26 +5201,39 @@ namespace AdvancedDiskAnalyzer
         CustomEula
     }
 
+    /// <summary>
+    /// Aktif lisansın anlık durumunu ve kısıtlamalarını bellekte tutan model.
+    /// </summary>
     public class LicenseState
     {
         public LicensePlan Plan = LicensePlan.Free;
-        public string PlanName = "Free";
-        public string Company = "Free Kullanıcı";
+        public string PlanName = "Ücretsiz";
+        public string Company = "Ücretsiz Kullanıcı";
         public string Email = "";
         public DateTime? Expires = null;
         public int Seats = 1;
         public string HardwareId = "";
         public bool IsValid = false;
         public string RawKey = "";
-        public string Message = "Free plan aktif.";
+        public string Message = "Ücretsiz plan aktif.";
     }
 
+    /// <summary>
+    /// Kayıt defteri (Registry) okuma/yazma operasyonlarını yürüten ve RSA doğrulamasını gerçekleştiren sınıf.
+    /// </summary>
     public static class LicenseManager
     {
         private const string LicenseRegistryPath = @"Software\AdvancedDiskAnalyzer\License";
+        
+        // RSA-2048 Asimetrik şifreleme açık anahtarı (public key xml).
+        // İmza bütünlüğünün doğrulanması için kaynak koda sabitlenmiştir.
         private const string PublicKeyXml =
             "<RSAKeyValue><Modulus>rJdXjF5+pUzOTHWnIdekvB85+OJ5TvhLygVyCXV1EllnmTYsHHLLmo9f9OfFTMZMyQG/Lo6IHUkYoXP1uq5P8Vc3Gd9GFcnj0HaLHaYJueNlDIjj3YFxJrA99ntyYdi+cM36++t057tTBujqEDncP4zgX1T029IgNewt7+F5bTWGzSJU/hKBHFxmTh/0LbiwQRxf/qj5qKUX4O0bZDYiFKgU1noPCIynDDzxnOoIDS0i9FysYBHkJeFwz0nMA81YmOtacCp9Rlg5M3+aCFqAk4j1di+WUgjAb2m3WMn07+Y58qqHRR7Cs5OHVAyed6QXvo7QFtTm2RNiCGQarM4W0Q==</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>";
 
+        /// <summary>
+        /// Windows Kayıt Defteri'nde (Registry HKCU) saklanan lisans anahtarını yükler ve doğrular.
+        /// Herhangi bir hata veya imza uyuşmazlığı durumunda geri dönüp kısıtlı "Free" durumunu aktif eder.
+        /// </summary>
         public static LicenseState Load()
         {
             LicenseState free = FreeState();
@@ -3751,6 +5257,9 @@ namespace AdvancedDiskAnalyzer
             catch { return free; }
         }
 
+        /// <summary>
+        /// Yeni girilen lisans anahtarını asimetrik olarak denetler, geçerli ise Kayıt Defteri'ne kalıcı olarak yazar.
+        /// </summary>
         public static bool Install(string rawKey, out string message)
         {
             LicenseState state;
@@ -3779,12 +5288,18 @@ namespace AdvancedDiskAnalyzer
             }
         }
 
+        /// <summary>
+        /// Kayıt defterindeki lisans girdilerini silerek yazılımı lisanssız sürüme düşürür.
+        /// </summary>
         public static void Remove()
         {
             try { Registry.CurrentUser.DeleteSubKeyTree(LicenseRegistryPath); }
             catch { }
         }
 
+        /// <summary>
+        /// Plana göre ilgili özelliğin (Feature Flag) kullanılabilir olup olmadığını sorgular.
+        /// </summary>
         public static bool HasFeature(LicenseState state, LicenseFeature feature)
         {
             if (state == null) state = FreeState();
@@ -3809,7 +5324,7 @@ namespace AdvancedDiskAnalyzer
 
         public static string RequiredPlanName(LicenseFeature feature)
         {
-            return feature == LicenseFeature.PdfReport ? "Pro" : "Enterprise";
+            return feature == LicenseFeature.PdfReport ? "Pro" : "Kurumsal";
         }
 
         public static string GetHardwareId()
@@ -3853,7 +5368,7 @@ namespace AdvancedDiskAnalyzer
         {
             if (!HasFeature(state, LicenseFeature.CustomEula))
             {
-                message = "EULA özelleştirme Enterprise planda kullanılabilir.";
+                message = "EULA özelleştirme Kurumsal planda kullanılabilir.";
                 return false;
             }
 
@@ -3934,7 +5449,7 @@ namespace AdvancedDiskAnalyzer
                 expires = parsed.Date;
                 if (DateTime.Now.Date > expires.Value)
                 {
-                    message = "Lisans süresi dolmus.";
+                    message = "Lisans süresi dolmuş.";
                     return false;
                 }
             }
@@ -3947,7 +5462,7 @@ namespace AdvancedDiskAnalyzer
             string localHardware = GetHardwareId();
             if (hardware != "*" && !string.Equals(hardware, localHardware, StringComparison.OrdinalIgnoreCase))
             {
-                message = "Lisans bu cihaz icin üretilmemis.";
+                message = "Lisans bu cihaz için üretilmemiş.";
                 return false;
             }
 
@@ -3985,28 +5500,41 @@ namespace AdvancedDiskAnalyzer
         private static string PlanToName(LicensePlan plan)
         {
             if (plan == LicensePlan.Pro) return "Pro";
-            if (plan == LicensePlan.Enterprise) return "Enterprise";
-            return "Free";
+            if (plan == LicensePlan.Enterprise) return "Kurumsal";
+            return "Ücretsiz";
         }
 
         private static LicenseState FreeState()
         {
             LicenseState state = new LicenseState();
             state.Plan = LicensePlan.Free;
-            state.PlanName = "Free";
-            state.Company = "Free Kullanıcı";
+            state.PlanName = "Ücretsiz";
+            state.Company = "Ücretsiz Kullanıcı";
             state.HardwareId = GetHardwareId();
             state.IsValid = false;
-            state.Message = "Free plan aktif.";
+            state.Message = "Ücretsiz plan aktif.";
             return state;
         }
     }
 
+    // =====================================================================
+    // BÖLÜM: ÇEVRİM İÇİ LİSANS İSTEMCİSİ (OnlineLicenseClient)
+    // =====================================================================
+    // Amacı  : Lisans sunucusuyla (LicenseServer.exe) HTTP protokolü üzerinden
+    //          haberleşerek kayıt olma (Register), giriş yapma (Login), lisans satın alma
+    //          (Checkout) ve donanım kimliğiyle lisans yenileme (Activate) işlemlerini gerçekleştirir.
+    // Yöntemi: WebClient nesnesinin UploadValues metoduyla sunucuya "application/x-www-form-urlencoded"
+    //          tipinde HTTP POST istekleri gönderilir. Dönen veri satır bazlı çözümlenerek (parse)
+    //          sunucudan gelen token ve hata mesajları sisteme entegre edilir.
+    // =====================================================================
     public static class OnlineLicenseClient
     {
         private const string RegistryPath = @"Software\AdvancedDiskAnalyzer\License";
         private const string DefaultServerUrl = "http://localhost:8765";
 
+        /// <summary>
+        /// Kayıt defterinde saklanan lisans sunucusu URL'ini getirir. Bulamazsa varsayılan yerel URL'i döner.
+        /// </summary>
         public static string GetServerUrl()
         {
             try
@@ -4185,7 +5713,7 @@ namespace AdvancedDiskAnalyzer
 
                     if (string.IsNullOrEmpty(licenseKey))
                     {
-                        message = "Sunucu lisans anahtari döndürmedi.";
+                        message = "Sunucu lisans anahtarı döndürmedi.";
                         return false;
                     }
                     return true;
@@ -4304,7 +5832,7 @@ namespace AdvancedDiskAnalyzer
         private void BuildUi()
         {
             Label title = new Label();
-            title.Text = "Advanced Disk Analyzer Account";
+            title.Text = "Advanced Disk Analyzer Hesabı";
             title.Font = new Font("Segoe UI", 15, FontStyle.Bold);
             title.Location = new Point(26, 22);
             title.Size = new Size(480, 34);
@@ -4343,7 +5871,7 @@ namespace AdvancedDiskAnalyzer
             login.Click += Login_Click;
             this.Controls.Add(login);
 
-            Button logout = NeutralButton("çıkıs", 290, 302, 88);
+            Button logout = NeutralButton("Çıkış", 290, 302, 88);
             logout.Click += delegate
             {
                 OnlineLicenseClient.ClearAccount();
@@ -4424,7 +5952,7 @@ namespace AdvancedDiskAnalyzer
             {
                 OnlineLicenseClient.SaveAccount(email, token);
                 RefreshStatus();
-                MessageBox.Show("Hesap olusturuldu ve giris yapildi.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Hesap oluşturuldu ve giriş yapıldı.", "Hesap", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 this.DialogResult = DialogResult.OK;
             }
             else if (OnlineLicenseClient.IsAccountAlreadyExists(message))
@@ -4487,7 +6015,7 @@ namespace AdvancedDiskAnalyzer
         private void RefreshStatus()
         {
             string email = OnlineLicenseClient.GetSavedEmail();
-            statusLabel.Text = string.IsNullOrEmpty(email) ? "Oturum acik degil" : "Oturum acik: " + email;
+            statusLabel.Text = string.IsNullOrEmpty(email) ? "Oturum açık değil" : "Oturum açık: " + email;
             statusLabel.ForeColor = string.IsNullOrEmpty(email) ? Theme.SubText : Theme.Success;
         }
     }
@@ -4505,7 +6033,7 @@ namespace AdvancedDiskAnalyzer
             this.BackColor = Theme.Surface;
 
             Label heading = new Label();
-            heading.Text = title + " icin " + LicenseManager.RequiredPlanName(feature) + " gerekir";
+            heading.Text = title + " için " + LicenseManager.RequiredPlanName(feature) + " gerekir";
             heading.Font = new Font("Segoe UI", 13, FontStyle.Bold);
             heading.Location = new Point(24, 24);
             heading.Size = new Size(460, 30);
@@ -4513,8 +6041,8 @@ namespace AdvancedDiskAnalyzer
             this.Controls.Add(heading);
 
             Label body = new Label();
-            body.Text = "Mevcut plan: " + (current == null ? "Free" : current.PlanName) +
-                "\n\nPro: PDF rapor\nEnterprise: ağ sürücüsü, toplu silme, kurumsal EULA";
+            body.Text = "Mevcut plan: " + (current == null ? "Ücretsiz" : current.PlanName) +
+                "\n\nPro: PDF rapor\nKurumsal: ağ sürücüsü, toplu silme, kurumsal EULA";
             body.Font = new Font("Segoe UI", 9);
             body.Location = new Point(26, 70);
             body.Size = new Size(450, 78);
@@ -4624,9 +6152,9 @@ namespace AdvancedDiskAnalyzer
             accountLabel.ForeColor = Theme.SubText;
             this.Controls.Add(accountLabel);
 
-            AddPlanColumn(30, 104, "Free", "Temel analiz\nTreemap\nKopya görünümü\nCSV export");
-            AddPlanColumn(286, 104, "Pro", "Free özellikleri\nPDF rapor\nProfesyonel çıktı\nOffline lisans");
-            AddPlanColumn(542, 104, "Enterprise", "Pro özellikleri\nAğ sürücüsü\nToplu silme\nKurumsal EULA");
+            AddPlanColumn(30, 104, "Ücretsiz", "Temel analiz\nTreemap\nKopya görünümü\nCSV dışa aktarım");
+            AddPlanColumn(286, 104, "Pro", "Ücretsiz özellikleri\nPDF rapor\nProfesyonel çıktı\nÇevrimdışı lisans");
+            AddPlanColumn(542, 104, "Kurumsal", "Pro özellikleri\nAğ sürücüsü\nToplu silme\nKurumsal EULA");
 
             Label hardware = new Label();
             hardware.Text = "Cihaz ID: " + LicenseManager.GetHardwareId();
@@ -4674,7 +6202,7 @@ namespace AdvancedDiskAnalyzer
             companyBox.Font = new Font("Segoe UI", 9);
             companyBox.BackColor = Theme.Card;
             companyBox.ForeColor = Theme.Text;
-            companyBox.Text = current.Company == "Free Kullanıcı" ? "" : current.Company;
+            companyBox.Text = (current.Company == "Free Kullanici" || current.Company == "Ücretsiz Kullanıcı") ? "" : current.Company;
             companyBox.Visible = false;
             this.Controls.Add(companyBox);
 
@@ -4734,11 +6262,11 @@ namespace AdvancedDiskAnalyzer
             login.Click += delegate { OnlineCheckout("PRO"); };
             this.Controls.Add(login);
 
-            Button activate = SmallButton("Key Etkinleştir", 276, 402, 120);
+            Button activate = SmallButton("Anahtar Etkinleştir", 276, 402, 120);
             activate.Click += Activate_Click;
             this.Controls.Add(activate);
 
-            Button remove = SmallButton("Free", 406, 402, 64);
+            Button remove = SmallButton("Ücretsiz", 406, 402, 72);
             remove.Click += delegate
             {
                 LicenseManager.Remove();
@@ -4749,7 +6277,7 @@ namespace AdvancedDiskAnalyzer
             };
             this.Controls.Add(remove);
 
-            Button buyPro = SmallButton("Enterprise", 484, 402, 96);
+            Button buyPro = SmallButton("Kurumsal", 484, 402, 96);
             buyPro.Click += delegate { OnlineCheckout("ENTERPRISE"); };
             this.Controls.Add(buyPro);
 
@@ -4763,7 +6291,7 @@ namespace AdvancedDiskAnalyzer
             this.Controls.Add(onlineActivate);
 
             Label eulaLabel = new Label();
-            eulaLabel.Text = "Enterprise EULA metni";
+            eulaLabel.Text = "Kurumsal EULA metni";
             eulaLabel.Location = new Point(32, 456);
             eulaLabel.Size = new Size(220, 20);
             eulaLabel.Font = new Font("Segoe UI", 9, FontStyle.Bold);
@@ -4809,7 +6337,7 @@ namespace AdvancedDiskAnalyzer
             heading.Location = new Point(12, 10);
             heading.Size = new Size(190, 24);
             heading.Font = new Font("Segoe UI", 11, FontStyle.Bold);
-            heading.ForeColor = title == "Enterprise" ? Theme.Success : Theme.Accent;
+            heading.ForeColor = title == "Kurumsal" ? Theme.Success : Theme.Accent;
             panel.Controls.Add(heading);
 
             Label desc = new Label();
@@ -4976,7 +6504,7 @@ namespace AdvancedDiskAnalyzer
             string licenseKey, message;
             if (!OnlineLicenseClient.Checkout(serverUrl, email, company, token, plan, LicenseManager.GetHardwareId(), out licenseKey, out message))
             {
-                MessageBox.Show(message, "Online Lisans", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(message, "Çevrim İçi Lisans", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
@@ -4986,11 +6514,11 @@ namespace AdvancedDiskAnalyzer
                 current = LicenseManager.Load();
                 RefreshStatus();
                 eulaBox.Enabled = LicenseManager.HasFeature(current, LicenseFeature.CustomEula);
-                MessageBox.Show(message, "Online Lisans", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(message, "Çevrim İçi Lisans", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 this.DialogResult = DialogResult.OK;
             }
             else
-                MessageBox.Show(message, "Online Lisans", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(message, "Çevrim İçi Lisans", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
 
         private void OnlineActivate_Click(object sender, EventArgs e)
@@ -5003,7 +6531,7 @@ namespace AdvancedDiskAnalyzer
             string licenseKey, message;
             if (!OnlineLicenseClient.Activate(serverUrl, email, token, LicenseManager.GetHardwareId(), out licenseKey, out message))
             {
-                MessageBox.Show(message, "Online Aktivasyon", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(message, "Çevrim İçi Aktivasyon", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
@@ -5013,39 +6541,37 @@ namespace AdvancedDiskAnalyzer
                 current = LicenseManager.Load();
                 RefreshStatus();
                 eulaBox.Enabled = LicenseManager.HasFeature(current, LicenseFeature.CustomEula);
-                MessageBox.Show(message, "Online Aktivasyon", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(message, "Çevrim İçi Aktivasyon", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 this.DialogResult = DialogResult.OK;
             }
             else
-                MessageBox.Show(message, "Online Aktivasyon", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(message, "Çevrim İçi Aktivasyon", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
 
         private void SaveEula_Click(object sender, EventArgs e)
         {
             string message;
             if (LicenseManager.SaveEnterpriseEulaText(current, eulaBox.Text, out message))
-                MessageBox.Show(message, "Enterprise EULA", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(message, "Kurumsal EULA", MessageBoxButtons.OK, MessageBoxIcon.Information);
             else
-                MessageBox.Show(message, "Enterprise EULA", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(message, "Kurumsal EULA", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
 
         private void RefreshStatus()
         {
-            string expires = current.Expires.HasValue ? current.Expires.Value.ToString("yyyy-MM-dd") : "Perpetual";
+            string expires = current.Expires.HasValue ? current.Expires.Value.ToString("yyyy-MM-dd") : "Süresiz";
             statusLabel.Text = "Plan: " + current.PlanName + "  |  Firma: " + current.Company + "  |  Bitiş: " + expires;
             statusLabel.ForeColor = LicenseManager.HasPaidPlan(current) ? Theme.Success : Theme.SubText;
             string savedEmail = OnlineLicenseClient.GetSavedEmail();
             if (accountLabel != null)
                 accountLabel.Text = string.IsNullOrEmpty(savedEmail) ? "Hesap yok" : "Oturum açık: " + savedEmail;
         }
+    }
 
-        private void OpenUrl(string url)
-        {
-            try { Process.Start(url); }
-            catch (Exception ex) { MessageBox.Show(ex.Message, "Bağlantı", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
-        }
-
-
+    /// <summary>
+    /// Kullanıcıdan basit metinsel veri girdisi (örneğin kurumsal sunucu URL'i)
+    /// almak için kullanılan modal diyalog kutusu.
+    /// </summary>
     public class PromptForm : Form
     {
         private TextBox input;
@@ -5113,14 +6639,17 @@ namespace AdvancedDiskAnalyzer
     }
 
     // =====================================================================
-    // ILK ACILIS GIZLILIK EKRANI
+    // BÖLÜM: İLK AÇILIŞ GİZLİLIK EKRANI (PrivacyConsentForm)
     // =====================================================================
-
+    // Amacı  : Uygulama ilk kez çalıştırıldığında veya lisans değiştiğinde,
+    //          kullanıcıya gizlilik politikası ve EULA (Son Kullanıcı Lisans Sözleşmesi)
+    //          koşullarını sunarak yasal kabul (consent) alır.
+    // =====================================================================
     public class PrivacyConsentForm : Form
     {
         public PrivacyConsentForm(string version, string stampDate, string customEulaText)
         {
-            this.Text = "Gizlilik Guvencesi";
+            this.Text = "Gizlilik Güvencesi";
             this.Size = new Size(560, 360);
             this.StartPosition = FormStartPosition.CenterParent;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -5148,10 +6677,9 @@ namespace AdvancedDiskAnalyzer
             string[] lines = string.IsNullOrEmpty(customEulaText)
                 ? new string[]
             {
-                "- Bu yazilim tamamen çevrimdışı çalışır.",
+                "- Bu yazılım tamamen çevrimdışı çalışır.",
                 "- Hiçbir dosya adı, boyut veya içerik dış sunuculara gönderilmez.",
                 "- Geliştirici hiçbir kullanıcı verisine erişemez."
-                "- Açık kaynak kodlu bir yazılım olduğundan dolayı bunların hepsi kontrol edilebilir.
             }
                 : customEulaText.Replace("\r", "").Split('\n');
 
@@ -5194,9 +6722,18 @@ namespace AdvancedDiskAnalyzer
     }
 
     // =====================================================================
-    // HARICI KUTUPHANESIZ PDF RAPOR
+    // BÖLÜM: HARİCİ KÜTÜPHANESİZ PDF RAPOR OLUŞTURUCU (PdfReportExporter)
     // =====================================================================
-
+    // Amacı  : Pro ve Kurumsal sürümlerde, disk analizi sonuçlarını (en büyük dosyalar,
+    //          temizlik önerileri, pasta grafik vb.) harici hiçbir PDF motoruna (iTextSharp vb.)
+    //          bağımlı olmadan, ham PDF-1.4 dosya yapısını binary düzeyde el ile
+    //          inşa ederek PDF formatında dışa aktarır.
+    // Yöntemi: PDF dosya formatı spesifikasyonuna uygun olarak catalog, font, resim ve
+    //          sayfa stream nesnelerini (PDF objects) byte dizileri halinde oluşturur.
+    //          Görüntüleri DCTDecode (JPEG stream) filtresi ile doğrudan PDF içine gömer.
+    //          Dosya sonuna xref (cross-reference table) tablosunu kesin byte konumlarıyla yazarak
+    //          standart PDF okuyucular tarafından sorunsuz açılmasını garanti eder.
+    // =====================================================================
     public class PdfReportExporter
     {
         private const float PageWidth = 595f;
@@ -5228,8 +6765,7 @@ namespace AdvancedDiskAnalyzer
             CollectAllFiles(root, allFiles);
 
             List<FileNode> deletable = allFiles
-                .Where(f => f.Extension == ".tmp" || f.Extension == ".log" ||
-                            f.Extension == ".bak" || f.Extension == ".old" || f.Name.StartsWith("~"))
+                .Where(f => CleanupRules.IsStrictSafeCleanupCandidate(f))
                 .OrderByDescending(f => f.Size).ToList();
             long deletableSize = deletable.Sum(f => f.Size);
 
@@ -5254,17 +6790,18 @@ namespace AdvancedDiskAnalyzer
             WriteLine("Rapor tarihi: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), 10, false);
             WriteLine("Tarama klasörü: " + scanPath, 10, false);
             WriteLine("Toplam boyut: " + FormatSize(root.Size), 10, false);
+            WriteLine("Diskte kaplanan: " + FormatSize(root.AllocatedSize), 10, false);
             WriteLine("Dosya sayısı: " + string.Format("{0:N0}", allFiles.Count), 10, false);
-            WriteLine("Temizlenebilir alan: " + FormatSize(deletableSize), 10, false);
+            WriteLine("Güvenli taşınabilir alan: " + FormatSize(deletableSize), 10, false);
             if (isNetworkDrive)
                 WriteLine("Ağ sürücüsü / sunucu: " + networkInfo, 10, true);
 
             AddChart();
             AddFileTable("En Büyük Dosyalar", topLargest, "Dosya bulunamadı.");
-            AddFileTable("Silinebilecek Dosyalar", deletable.Take(30).ToList(), "Silinebilecek dosya bulunamadı.");
+            AddFileTable("Geri Dönüşüm Kutusuna Taşınabilecek Dosyalar", deletable.Take(30).ToList(), "Kesin güvenli temizlik dosyası bulunamadı.");
             AddFileTable("Büyük ve Eski Dosyalar", bigOld.Take(30).ToList(), "Büyük ve eski dosya bulunamadı.");
             AddFileTable("Olası Kopyalar", duplicateFiles.Take(45).ToList(), "Olası kopya bulunamadı.");
-            AddDirectoryTable("En Buyuk Klasorler", bigDirs, root.Size);
+            AddDirectoryTable("En Büyük Klasörler", bigDirs, root.Size);
         }
 
         private static void CollectAllFiles(DirectoryNode node, List<FileNode> result)
@@ -5387,7 +6924,7 @@ namespace AdvancedDiskAnalyzer
             DrawTextAt(250, y, FormatSize(f.Size), 8, false);
             DrawTextAt(318, y, f.Score.ToString(), 8, false);
             DrawTextAt(360, y, f.LastModified.ToString("yyyy-MM-dd"), 8, false);
-            DrawTextAt(430, y, Truncate(Path.GetDirectoryName(f.FullPath), 24), 8, false);
+            DrawTextAt(430, y, Truncate(!string.IsNullOrEmpty(f.DirectoryPath) ? f.DirectoryPath : PathText.GetDirectoryName(f.FullPath), 24), 8, false);
             y -= 15;
         }
 
@@ -5396,7 +6933,7 @@ namespace AdvancedDiskAnalyzer
             AddSection(title);
             if (dirs.Count == 0)
             {
-                WriteLine("Klasor verisi bulunamadi.", 9, false);
+                WriteLine("Klasör verisi bulunamadı.", 9, false);
                 return;
             }
 
@@ -5593,39 +7130,1221 @@ namespace AdvancedDiskAnalyzer
     }
 
     // =====================================================================
-    // MODELLER
+    // BÖLÜM: NATIVE VERİ MODELLERİ VE WIN32 API (P/INVOKE) BİLEŞENLERİ
+    // =====================================================================
+    // Amacı  : Windows çekirdek (Kernel32.dll ve Shell32.dll) kütüphanelerindeki
+    //          düşük seviyeli Win32 I/O fonksiyonlarına doğrudan erişim sağlayarak
+    //          standard .NET kütüphanelerinin (System.IO) getirdiği ek yükleri azaltır
+    //          ve işletim sisteminin dosya indeksleme hızından maksimum düzeyde yararlanır.
+    // İçerik : - Win32FindData           : Dosya özniteliklerini ve zaman damgalarını tutan C++ yapısı.
+    //          - ByHandleFileInformation : Hard link tespiti ve tekil dosya kimlik tespiti yapısı.
+    //          - NativeFileApi           : FindFirstFile, CreateFile ve SHFileOperation sarmalayıcıları.
+    //          - PathText                : Garbage Collector yükünü azaltan hızlı metin bölme sınıfı.
     // =====================================================================
 
+    /// <summary>
+    /// Tarama esnasında bellek tahsisatını (allocation) azaltmak için kullanılan optimize dosya girdi modeli.
+    /// </summary>
+    public class FastFileEntry
+    {
+        public string Name;
+        public string FullPath;
+        public long Size;
+        public DateTime LastWriteTime;
+        public FileAttributes Attributes;
+        public bool IsDirectory;
+    }
+
+    /// <summary>
+    /// NTFS üzerindeki hard link'lenmiş dosyaların aynı veri bloğunu işaret ettiğini
+    /// doğrulamak için kullanılan donanımsal dosya kimlik yapısı.
+    /// </summary>
+    public struct FileIdentity
+    {
+        public string Key; // Hacim Seri Numarası + Dosya İndeksi (VolumeSerial + FileIndex)
+        public uint LinkCount;
+    }
+
+    /// <summary>
+    /// Win32 FindFirstFile/FindNextFile API'leri tarafından doldurulan
+    /// ve dosya metaverilerini barındıran ardışık (sequential) Win32 veri yapısı.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct Win32FindData
+    {
+        public uint dwFileAttributes;
+        public uint ftCreationTimeLow;
+        public uint ftCreationTimeHigh;
+        public uint ftLastAccessTimeLow;
+        public uint ftLastAccessTimeHigh;
+        public uint ftLastWriteTimeLow;
+        public uint ftLastWriteTimeHigh;
+        public uint nFileSizeHigh;
+        public uint nFileSizeLow;
+        public uint dwReserved0;
+        public uint dwReserved1;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string cFileName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)]
+        public string cAlternateFileName;
+    }
+
+    /// <summary>
+    /// Windows dosya tablosundan doğrudan disk seri numarası ve index kimliği
+    /// çekmek için kullanılan Win32 dosya bilgi yapısı.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ByHandleFileInformation
+    {
+        public uint dwFileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ftCreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ftLastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ftLastWriteTime;
+        public uint dwVolumeSerialNumber;
+        public uint nFileSizeHigh;
+        public uint nFileSizeLow;
+        public uint nNumberOfLinks;
+        public uint nFileIndexHigh;
+        public uint nFileIndexLow;
+    }
+
+    /// <summary>
+    /// Win32 tabanlı dosya arama, sıkıştırılmış dosya boyutu sorgulama,
+    /// hard link kimlik eşleştirme ve Geri Dönüşüm Kutusu'na taşıma çağrılarını barındıran sınıf.
+    /// </summary>
+    public static class NativeFileApi
+    {
+        public static readonly IntPtr InvalidHandleValue = new IntPtr(-1);
+        private const uint FILE_SHARE_READ = 0x00000001;
+        private const uint FILE_SHARE_WRITE = 0x00000002;
+        private const uint FILE_SHARE_DELETE = 0x00000004;
+        private const uint OPEN_EXISTING = 3;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr FindFirstFile(string lpFileName, out Win32FindData lpFindFileData);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool FindNextFile(IntPtr hFindFile, out Win32FindData lpFindFileData);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool FindClose(IntPtr hFindFile);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern uint GetCompressedFileSize(string lpFileName, out uint lpFileSizeHigh);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool DeleteFile(string lpFileName);
+
+        private const uint FO_DELETE = 0x0003;
+        private const ushort FOF_ALLOWUNDO = 0x0040;
+        private const ushort FOF_NOCONFIRMATION = 0x0010;
+        private const ushort FOF_NOERRORUI = 0x0400;
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct SHFILEOPSTRUCT
+        {
+            public IntPtr hwnd;
+            public uint wFunc;
+            public string pFrom;
+            public string pTo;
+            public ushort fFlags;
+            [MarshalAs(UnmanagedType.Bool)]
+            public bool fAnyOperationsAborted;
+            public IntPtr hNameMappings;
+            public string lpszProgressTitle;
+        }
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        private static extern int SHFileOperation(ref SHFILEOPSTRUCT lpFileOp);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetDiskFreeSpace(string lpRootPathName,
+            out uint lpSectorsPerCluster, out uint lpBytesPerSector,
+            out uint lpNumberOfFreeClusters, out uint lpTotalNumberOfClusters);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFile(string lpFileName, uint dwDesiredAccess,
+            uint dwShareMode, IntPtr lpSecurityAttributes, uint dwCreationDisposition,
+            uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetFileInformationByHandle(SafeFileHandle hFile, out ByHandleFileInformation lpFileInformation);
+
+        public static bool TryGetFileIdentity(string path, out FileIdentity identity)
+        {
+            identity = new FileIdentity();
+            try
+            {
+                using (SafeFileHandle handle = CreateFile(ToExtendedPath(path), 0,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero))
+                {
+                    if (handle == null || handle.IsInvalid)
+                        return false;
+
+                    ByHandleFileInformation info;
+                    if (!GetFileInformationByHandle(handle, out info))
+                        return false;
+
+                    identity.LinkCount = info.nNumberOfLinks;
+                    identity.Key = info.dwVolumeSerialNumber.ToString("X8", CultureInfo.InvariantCulture) + ":" +
+                                   info.nFileIndexHigh.ToString("X8", CultureInfo.InvariantCulture) +
+                                   info.nFileIndexLow.ToString("X8", CultureInfo.InvariantCulture);
+                    return true;
+                }
+            }
+            catch { return false; }
+        }
+
+        public static bool MoveToRecycleBin(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            try
+            {
+                SHFILEOPSTRUCT op = new SHFILEOPSTRUCT();
+                op.wFunc = FO_DELETE;
+                op.pFrom = path + "\0\0";
+                op.fFlags = (ushort)(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI);
+                int result = SHFileOperation(ref op);
+                return result == 0 && !op.fAnyOperationsAborted;
+            }
+            catch { return false; }
+        }
+
+        public static string ToExtendedPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+            if (path.StartsWith(@"\\?\", StringComparison.Ordinal)) return path;
+            if (path.StartsWith(@"\\", StringComparison.Ordinal))
+                return @"\\?\UNC\" + path.Substring(2);
+            try
+            {
+                if (Path.IsPathRooted(path))
+                    return @"\\?\" + path;
+            }
+            catch { }
+            return path;
+        }
+    }
+
+    public static class PathText
+    {
+        public static string GetFileName(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "";
+            string trimmed = path.TrimEnd('\\', '/');
+            if (trimmed.Length == 0) return path;
+            int index = Math.Max(trimmed.LastIndexOf('\\'), trimmed.LastIndexOf('/'));
+            if (index >= 0 && index < trimmed.Length - 1)
+                return trimmed.Substring(index + 1);
+            return trimmed;
+        }
+
+        public static string GetDirectoryName(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "";
+            string trimmed = path.TrimEnd('\\', '/');
+            if (trimmed.Length == 0) return "";
+            int index = Math.Max(trimmed.LastIndexOf('\\'), trimmed.LastIndexOf('/'));
+            if (index < 0) return "";
+            if (index == 2 && trimmed.Length > 1 && trimmed[1] == ':')
+                return trimmed.Substring(0, 3);
+            if (index == 0 && trimmed.StartsWith(@"\\", StringComparison.Ordinal))
+                return trimmed;
+            return trimmed.Substring(0, index);
+        }
+
+        public static string GetExtension(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return "";
+            int slash = Math.Max(name.LastIndexOf('\\'), name.LastIndexOf('/'));
+            int dot = name.LastIndexOf('.');
+            if (dot <= slash || dot < 0 || dot == name.Length - 1) return "";
+            return name.Substring(dot);
+        }
+
+        public static string GetRoot(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "";
+            if (path.Length >= 2 && path[1] == ':')
+                return path.Length >= 3 && (path[2] == '\\' || path[2] == '/') ? path.Substring(0, 3) : path.Substring(0, 2) + "\\";
+
+            if (path.StartsWith(@"\\", StringComparison.Ordinal))
+            {
+                int serverEnd = path.IndexOf('\\', 2);
+                if (serverEnd < 0) return path;
+                int shareEnd = path.IndexOf('\\', serverEnd + 1);
+                if (shareEnd < 0) return path;
+                return path.Substring(0, shareEnd + 1);
+            }
+
+            return "";
+        }
+
+        public static string Combine(string parent, string child)
+        {
+            if (string.IsNullOrEmpty(parent)) return child ?? "";
+            if (string.IsNullOrEmpty(child)) return parent;
+            char last = parent[parent.Length - 1];
+            if (last == '\\' || last == '/')
+                return parent + child;
+            return parent + "\\" + child;
+        }
+    }
+
+    // =====================================================================
+    // BÖLÜM: NTFS TURBO TARAMA MOTORU (NtfsMftScanner)
+    // =====================================================================
+    // Amacı  : NTFS dosya sistemine sahip yerel disklerde, klasörleri tek tek dolaşmak
+    //          (directory traversal) yerine, diskin en başındaki $MFT (Master File Table)
+    //          meta-dosyasını sektör seviyesinde ham olarak okur. Bu sayede milyonlarca dosyayı
+    //          birkaç saniye içerisinde belleğe alıp analiz edebilir. Yönetici yetkisi (Admin) gerektirir.
+    // Yöntemi: 1. CreateFile ile mantıksal sürücü ("\\.\C:") raw disk okuma moduyla açılır.
+    //          2. Disk sektör sıfırdan NTFS Boot Sector yapısı okunarak küme (cluster) boyutu
+    //             ve $MFT başlangıç sektörü (MftStartOffset) çözümlenir.
+    //          3. $MFT'nin kendi veri bloklarının disk üzerindeki dağılım haritası (Data Runs) çıkarılır.
+    //          4. Tüm dosya kayıtları (MFT Records, 1024-byte bloklar) belleğe sıralı okunur.
+    //          5. Okunan kayıtların imza düzeltmeleri (Fixup/USN) uygulanarak dosya ismi ($FILE_NAME),
+    //             boyutu ($DATA) ve üst klasör ID'si (Parent Directory ID) ilişkilendirilip
+    //             bellekte hiyerarşik ağaç yapısı oluşturulur.
+    // =====================================================================
+
+    /// <summary>
+    /// Master File Table ($MFT) içindeki her bir dosya veya klasör kaydını temsil eden model.
+    /// </summary>
+    public class NtfsMftRecord
+    {
+        public long Id;
+        public long ParentId;
+        public string Name;
+        public bool IsDirectory;
+        public long Size;
+        public long AllocatedSize;
+        public DateTime LastModified;
+        public FileAttributes Attributes;
+        public ushort LinkCount;
+    }
+
+    /// <summary>
+    /// NTFS veri parçalarının disk üzerindeki ardışık küme yerleşim haritası girdisi.
+    /// </summary>
+    public class NtfsDataRun
+    {
+        public long Lcn;            // Mantıksal Küme Numarası (Logical Cluster Number)
+        public long ClusterLength;  // Küme cinsinden uzunluk
+    }
+
+    /// <summary>
+    /// Raw disk okuma protokolünü uygulayan statik NTFS analiz motoru.
+    /// </summary>
+    public static class NtfsMftScanner
+    {
+        private const uint GENERIC_READ = 0x80000000;
+        private const uint FILE_SHARE_READ = 0x00000001;
+        private const uint FILE_SHARE_WRITE = 0x00000002;
+        private const uint FILE_SHARE_DELETE = 0x00000004;
+        private const uint OPEN_EXISTING = 3;
+        private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
+        private const int FILE_RECORD_MAGIC = 0x454C4946; // "FILE" ASCII Magic Numarası
+        private const int AttributeStandardInformation = 0x10;
+        private const int AttributeFileName = 0x30;
+        private const int AttributeData = 0x80;
+        private const int AttributeEnd = unchecked((int)0xFFFFFFFF);
+        private const int TurboCompactRecordThreshold = 300000;
+        private const long TurboMaterializeMinBytes = 16L * 1024L * 1024L;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFile(string lpFileName, uint dwDesiredAccess,
+            uint dwShareMode, IntPtr lpSecurityAttributes, uint dwCreationDisposition,
+            uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool ReadFile(SafeFileHandle hFile, byte[] lpBuffer,
+            int nNumberOfBytesToRead, out int lpNumberOfBytesRead, IntPtr lpOverlapped);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetFilePointerEx(SafeFileHandle hFile, long liDistanceToMove,
+            out long lpNewFilePointer, uint dwMoveMethod);
+
+        public static DirectoryNode TryScan(string scanPath, CancellationToken token,
+            AdaptiveScoringModel scoringModel, DateTime oldFileThreshold, bool allocatedSizeEnabled,
+            Action<FileNode> liveFile, out string message)
+        {
+            message = "";
+            try
+            {
+                Stopwatch turboWatch = Stopwatch.StartNew();
+                string root = PathText.GetRoot(scanPath);
+                if (string.IsNullOrEmpty(root) || root.Length < 2 || root[1] != ':')
+                {
+                    message = "NTFS Turbo yalnızca yerel sürücülerde kullanılabilir.";
+                    return null;
+                }
+
+                try
+                {
+                    DriveInfo drive = new DriveInfo(root);
+                    if (!string.Equals(drive.DriveFormat, "NTFS", StringComparison.OrdinalIgnoreCase))
+                    {
+                        message = "NTFS Turbo için sürücü NTFS olmalı.";
+                        return null;
+                    }
+                }
+                catch
+                {
+                    message = "Sürücü biçimi okunamadı.";
+                    return null;
+                }
+
+                string volumePath = "\\\\.\\" + char.ToUpperInvariant(root[0]) + ":";
+                using (SafeFileHandle volume = CreateFile(volumePath, GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    IntPtr.Zero, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero))
+                {
+                    if (volume == null || volume.IsInvalid)
+                    {
+                        message = "NTFS Turbo için disk erişimi açılamadı. Yönetici olarak çalıştırmayı deneyin.";
+                        return null;
+                    }
+
+                    NtfsBootInfo boot;
+                    if (!ReadBootInfo(volume, out boot))
+                    {
+                        message = "NTFS önyükleme bilgisi okunamadı.";
+                        return null;
+                    }
+
+                    byte[] firstRecord = new byte[boot.RecordSize];
+                    if (!ReadAt(volume, boot.MftStartOffset, firstRecord, firstRecord.Length))
+                    {
+                        message = "$MFT başlangıcı okunamadı.";
+                        return null;
+                    }
+
+                    if (!ApplyFixup(firstRecord, 0, boot.RecordSize, boot.BytesPerSector))
+                    {
+                        message = "$MFT dosya kaydı doğrulanamadı.";
+                        return null;
+                    }
+
+                    long mftBytes;
+                    List<NtfsDataRun> runs = ReadMftDataRuns(firstRecord, boot, out mftBytes);
+                    if (runs.Count == 0 || mftBytes <= 0)
+                    {
+                        message = "$MFT veri akışı çözümlenemedi.";
+                        return null;
+                    }
+
+                    Dictionary<long, NtfsMftRecord> records = ReadRecords(volume, runs, boot, mftBytes, token);
+                    double readSeconds = turboWatch.Elapsed.TotalSeconds;
+                    if (records.Count == 0)
+                    {
+                        message = "$MFT içinde geçerli dosya kaydı bulunamadı.";
+                        return null;
+                    }
+
+                    Dictionary<long, List<NtfsMftRecord>> children = BuildChildren(records);
+                    long scanRootId = ResolveScanRootId(scanPath, root, children);
+                    if (scanRootId < 0 || !records.ContainsKey(scanRootId))
+                    {
+                        message = "Seçilen klasör MFT içinde eşleştirilemedi.";
+                        return null;
+                    }
+
+                    bool compactMode = records.Count >= TurboCompactRecordThreshold;
+                    DirectoryNode rootNode = BuildDirectory(scanRootId, scanPath, records, children, scoringModel,
+                        oldFileThreshold, allocatedSizeEnabled, compactMode, liveFile, token);
+                    double totalSeconds = turboWatch.Elapsed.TotalSeconds;
+                    if (rootNode == null)
+                    {
+                        message = "NTFS Turbo klasör ağacı oluşturamadı.";
+                        return null;
+                    }
+
+                    message = "NTFS Turbo aktif: " + string.Format("{0:N0}", records.Count) +
+                        " MFT kaydı okundu" + (compactMode ? " (hızlı önizleme)" : "") +
+                        ". Okuma " + readSeconds.ToString("F1", CultureInfo.InvariantCulture) +
+                        " sn, model " + (totalSeconds - readSeconds).ToString("F1", CultureInfo.InvariantCulture) + " sn.";
+                    return rootNode;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                message = "NTFS Turbo kullanılamadı: " + ex.Message;
+                return null;
+            }
+        }
+
+        private struct NtfsBootInfo
+        {
+            public int BytesPerSector;
+            public int SectorsPerCluster;
+            public int BytesPerCluster;
+            public int RecordSize;
+            public long MftStartOffset;
+        }
+
+        private static bool ReadBootInfo(SafeFileHandle volume, out NtfsBootInfo boot)
+        {
+            boot = new NtfsBootInfo();
+            byte[] sector = new byte[512];
+            if (!ReadAt(volume, 0, sector, sector.Length)) return false;
+            string signature = Encoding.ASCII.GetString(sector, 3, 8).Trim();
+            if (!string.Equals(signature, "NTFS", StringComparison.OrdinalIgnoreCase)) return false;
+
+            boot.BytesPerSector = ReadUInt16(sector, 11);
+            boot.SectorsPerCluster = sector[13];
+            boot.BytesPerCluster = boot.BytesPerSector * boot.SectorsPerCluster;
+            long mftCluster = ReadInt64(sector, 48);
+            sbyte clustersPerRecord = unchecked((sbyte)sector[64]);
+            boot.RecordSize = clustersPerRecord < 0
+                ? 1 << -clustersPerRecord
+                : clustersPerRecord * boot.BytesPerCluster;
+            boot.MftStartOffset = mftCluster * (long)boot.BytesPerCluster;
+            return boot.BytesPerSector > 0 && boot.BytesPerCluster > 0 &&
+                   boot.RecordSize >= 512 && boot.MftStartOffset > 0;
+        }
+
+        private static List<NtfsDataRun> ReadMftDataRuns(byte[] record, NtfsBootInfo boot, out long mftBytes)
+        {
+            mftBytes = 0;
+            List<NtfsDataRun> runs = new List<NtfsDataRun>();
+            int attrOffset = ReadUInt16(record, 20);
+            while (attrOffset > 0 && attrOffset + 16 < record.Length)
+            {
+                int type = ReadInt32(record, attrOffset);
+                if (type == AttributeEnd) break;
+                int length = ReadInt32(record, attrOffset + 4);
+                if (length <= 0 || attrOffset + length > record.Length) break;
+                bool nonResident = record[attrOffset + 8] != 0;
+                if (type == AttributeData && nonResident)
+                {
+                    int runOffset = ReadUInt16(record, attrOffset + 32);
+                    long realSize = ReadInt64(record, attrOffset + 48);
+                    mftBytes = realSize;
+                    runs = DecodeDataRuns(record, attrOffset + runOffset, attrOffset + length);
+                    break;
+                }
+                attrOffset += length;
+            }
+            return runs;
+        }
+
+        private static Dictionary<long, NtfsMftRecord> ReadRecords(SafeFileHandle volume, List<NtfsDataRun> runs,
+            NtfsBootInfo boot, long mftBytes, CancellationToken token)
+        {
+            Dictionary<long, NtfsMftRecord> records = new Dictionary<long, NtfsMftRecord>();
+            int chunkSize = Math.Max(boot.RecordSize, (4 * 1024 * 1024 / boot.RecordSize) * boot.RecordSize);
+            byte[] buffer = new byte[chunkSize];
+            long streamOffset = 0;
+            long recordIndex = 0;
+
+            foreach (NtfsDataRun run in runs)
+            {
+                token.ThrowIfCancellationRequested();
+                long runBytes = run.ClusterLength * (long)boot.BytesPerCluster;
+                long remaining = Math.Min(runBytes, mftBytes - streamOffset);
+                long diskOffset = run.Lcn * (long)boot.BytesPerCluster;
+
+                while (remaining >= boot.RecordSize)
+                {
+                    token.ThrowIfCancellationRequested();
+                    int wanted = (int)Math.Min(buffer.Length, remaining);
+                    wanted = (wanted / boot.RecordSize) * boot.RecordSize;
+                    if (wanted <= 0) break;
+                    if (!ReadAt(volume, diskOffset, buffer, wanted)) break;
+
+                    int recordsInChunk = wanted / boot.RecordSize;
+                    for (int i = 0; i < recordsInChunk; i++)
+                    {
+                        int offset = i * boot.RecordSize;
+                        NtfsMftRecord record = ParseRecord(buffer, offset, boot, recordIndex);
+                        if (record != null && !records.ContainsKey(record.Id))
+                            records.Add(record.Id, record);
+                        recordIndex++;
+                    }
+
+                    diskOffset += wanted;
+                    streamOffset += wanted;
+                    remaining -= wanted;
+                }
+            }
+
+            return records;
+        }
+
+        private static NtfsMftRecord ParseRecord(byte[] buffer, int offset, NtfsBootInfo boot, long recordIndex)
+        {
+            if (offset + boot.RecordSize > buffer.Length) return null;
+            if (ReadInt32(buffer, offset) != FILE_RECORD_MAGIC) return null;
+            if (!ApplyFixup(buffer, offset, boot.RecordSize, boot.BytesPerSector)) return null;
+
+            ushort flags = ReadUInt16(buffer, offset + 22);
+            bool inUse = (flags & 0x0001) != 0;
+            if (!inUse) return null;
+
+            long baseRef = (long)(ReadUInt64(buffer, offset + 32) & 0x0000FFFFFFFFFFFFUL);
+            if (baseRef != 0) return null;
+
+            NtfsMftRecord result = new NtfsMftRecord();
+            result.Id = recordIndex;
+            result.IsDirectory = (flags & 0x0002) != 0;
+            result.LinkCount = ReadUInt16(buffer, offset + 18);
+            result.LastModified = DateTime.MinValue;
+            result.AllocatedSize = 0;
+            result.Size = 0;
+
+            int attrOffset = offset + ReadUInt16(buffer, offset + 20);
+            int recordEnd = offset + boot.RecordSize;
+            int bestNameRank = -1;
+
+            while (attrOffset > offset && attrOffset + 16 < recordEnd)
+            {
+                int type = ReadInt32(buffer, attrOffset);
+                if (type == AttributeEnd) break;
+                int length = ReadInt32(buffer, attrOffset + 4);
+                if (length <= 0 || attrOffset + length > recordEnd) break;
+                bool nonResident = buffer[attrOffset + 8] != 0;
+
+                if (type == AttributeStandardInformation && !nonResident)
+                    ReadStandardInfo(buffer, attrOffset, result);
+                else if (type == AttributeFileName && !nonResident)
+                    ReadFileNameInfo(buffer, attrOffset, result, ref bestNameRank);
+                else if (type == AttributeData)
+                    ReadDataInfo(buffer, attrOffset, result, nonResident);
+
+                attrOffset += length;
+            }
+
+            if (string.IsNullOrEmpty(result.Name)) return null;
+            if (result.LastModified == DateTime.MinValue)
+                result.LastModified = DateTime.Now;
+            return result;
+        }
+
+        private static void ReadStandardInfo(byte[] buffer, int attrOffset, NtfsMftRecord result)
+        {
+            int valueLength = ReadInt32(buffer, attrOffset + 16);
+            int valueOffset = ReadUInt16(buffer, attrOffset + 20);
+            int value = attrOffset + valueOffset;
+            if (valueLength < 32 || value + 32 > buffer.Length) return;
+            result.LastModified = FileTimeToDateTime(ReadInt64(buffer, value + 16));
+        }
+
+        private static void ReadFileNameInfo(byte[] buffer, int attrOffset, NtfsMftRecord result, ref int bestNameRank)
+        {
+            int valueLength = ReadInt32(buffer, attrOffset + 16);
+            int valueOffset = ReadUInt16(buffer, attrOffset + 20);
+            int value = attrOffset + valueOffset;
+            if (valueLength < 66 || value + valueLength > buffer.Length) return;
+
+            int nameLength = buffer[value + 64];
+            int nameSpace = buffer[value + 65];
+            if (nameLength <= 0 || value + 66 + nameLength * 2 > buffer.Length) return;
+            string name = Encoding.Unicode.GetString(buffer, value + 66, nameLength * 2);
+            if (string.IsNullOrEmpty(name)) return;
+
+            int rank = nameSpace == 1 || nameSpace == 3 ? 3 : (nameSpace == 0 ? 2 : 1);
+            if (rank < bestNameRank) return;
+            if (rank == bestNameRank && result.Name != null && result.Name.Length >= name.Length) return;
+
+            result.ParentId = (long)(ReadUInt64(buffer, value) & 0x0000FFFFFFFFFFFFUL);
+            result.Name = name;
+            result.AllocatedSize = Math.Max(0, ReadInt64(buffer, value + 40));
+            result.Size = Math.Max(0, ReadInt64(buffer, value + 48));
+            result.Attributes = (FileAttributes)ReadUInt32(buffer, value + 56);
+            if (result.LastModified == DateTime.MinValue)
+                result.LastModified = FileTimeToDateTime(ReadInt64(buffer, value + 16));
+            bestNameRank = rank;
+        }
+
+        private static void ReadDataInfo(byte[] buffer, int attrOffset, NtfsMftRecord result, bool nonResident)
+        {
+            byte nameLength = buffer[attrOffset + 9];
+            if (nameLength != 0) return;
+
+            if (nonResident)
+            {
+                if (attrOffset + 56 > buffer.Length) return;
+                result.AllocatedSize = Math.Max(0, ReadInt64(buffer, attrOffset + 40));
+                result.Size = Math.Max(0, ReadInt64(buffer, attrOffset + 48));
+            }
+            else
+            {
+                int valueLength = ReadInt32(buffer, attrOffset + 16);
+                result.Size = Math.Max(0, valueLength);
+                if (result.AllocatedSize <= 0) result.AllocatedSize = result.Size;
+            }
+        }
+
+        private static Dictionary<long, List<NtfsMftRecord>> BuildChildren(Dictionary<long, NtfsMftRecord> records)
+        {
+            Dictionary<long, List<NtfsMftRecord>> children = new Dictionary<long, List<NtfsMftRecord>>();
+            foreach (NtfsMftRecord record in records.Values)
+            {
+                if (record.Id == record.ParentId) continue;
+                List<NtfsMftRecord> list;
+                if (!children.TryGetValue(record.ParentId, out list))
+                {
+                    list = new List<NtfsMftRecord>();
+                    children[record.ParentId] = list;
+                }
+                list.Add(record);
+            }
+            return children;
+        }
+
+        private static long ResolveScanRootId(string scanPath, string volumeRoot, Dictionary<long, List<NtfsMftRecord>> children)
+        {
+            string relative = scanPath;
+            if (relative.StartsWith(volumeRoot, StringComparison.OrdinalIgnoreCase))
+                relative = relative.Substring(volumeRoot.Length);
+            relative = relative.Trim('\\', '/');
+            long current = 5;
+            if (relative.Length == 0) return current;
+
+            string[] parts = relative.Split(new char[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < parts.Length; i++)
+            {
+                List<NtfsMftRecord> list;
+                if (!children.TryGetValue(current, out list)) return -1;
+                long next = -1;
+                foreach (NtfsMftRecord child in list)
+                {
+                    if (child.IsDirectory && string.Equals(child.Name, parts[i], StringComparison.OrdinalIgnoreCase))
+                    {
+                        next = child.Id;
+                        break;
+                    }
+                }
+                if (next < 0) return -1;
+                current = next;
+            }
+            return current;
+        }
+
+        private static DirectoryNode BuildDirectory(long id, string path, Dictionary<long, NtfsMftRecord> records,
+            Dictionary<long, List<NtfsMftRecord>> children, AdaptiveScoringModel scoringModel,
+            DateTime oldFileThreshold, bool allocatedSizeEnabled, bool compactMode, Action<FileNode> liveFile, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            NtfsMftRecord record;
+            if (!records.TryGetValue(id, out record)) return null;
+
+            DirectoryNode node = new DirectoryNode();
+            node.Name = id == 5 ? path : record.Name;
+            node.Path = path;
+
+            List<NtfsMftRecord> list;
+            if (!children.TryGetValue(id, out list)) return node;
+
+            foreach (NtfsMftRecord child in list)
+            {
+                token.ThrowIfCancellationRequested();
+                if (child.IsDirectory)
+                {
+                    string childPath = PathText.Combine(path, child.Name);
+                    DirectoryNode sub = BuildDirectory(child.Id, childPath, records, children, scoringModel,
+                        oldFileThreshold, allocatedSizeEnabled, compactMode, liveFile, token);
+                    if (sub == null) continue;
+                    node.SubDirectories.Add(sub);
+                    node.Size += sub.Size;
+                    node.AllocatedSize += sub.AllocatedSize;
+                    node.FileCount += sub.FileCount;
+                    if (sub.FilesArePartial) node.FilesArePartial = true;
+                }
+                else
+                {
+                    long logical = Math.Max(0, child.Size);
+                    long allocated = allocatedSizeEnabled ? Math.Max(child.AllocatedSize, logical) : logical;
+                    node.FileCount++;
+                    node.Size += logical;
+                    node.AllocatedSize += allocated;
+
+                    string extension = PathText.GetExtension(child.Name).ToLowerInvariant();
+                    bool materialize = !compactMode || ShouldMaterializeTurboFile(child, extension);
+                    if (!materialize)
+                    {
+                        node.FilesArePartial = true;
+                        continue;
+                    }
+
+                    string childPath = PathText.Combine(path, child.Name);
+                    FileNode file = new FileNode();
+                    file.Name = child.Name;
+                    file.DirectoryPath = path;
+                    file.FullPath = childPath;
+                    file.Size = logical;
+                    file.AllocatedSize = allocated;
+                    file.CountedSize = logical;
+                    file.CountedAllocatedSize = allocated;
+                    file.LastModified = child.LastModified;
+                    file.Extension = extension;
+                    file.HardLinkCount = child.LinkCount;
+                    file.Score = scoringModel.Score(file.Size, file.LastModified, file.Extension, file.Name, file.FullPath, oldFileThreshold);
+                    node.Files.Add(file);
+                    if (liveFile != null) liveFile(file);
+                }
+            }
+            return node;
+        }
+
+        private static bool ShouldMaterializeTurboFile(NtfsMftRecord record, string extension)
+        {
+            if (record.Size >= TurboMaterializeMinBytes) return true;
+            if (record.AllocatedSize >= TurboMaterializeMinBytes) return true;
+            if (extension == ".tmp" || extension == ".log" || extension == ".bak" ||
+                extension == ".old" || extension == ".dmp")
+                return true;
+            string name = record.Name ?? "";
+            if (name.Length > 0 && name[0] == '~') return true;
+            return false;
+        }
+
+        private static bool ApplyFixup(byte[] buffer, int offset, int recordSize, int bytesPerSector)
+        {
+            if (offset + recordSize > buffer.Length) return false;
+            if (ReadInt32(buffer, offset) != FILE_RECORD_MAGIC) return false;
+            int usaOffset = ReadUInt16(buffer, offset + 4);
+            int usaCount = ReadUInt16(buffer, offset + 6);
+            if (usaOffset <= 0 || usaCount <= 0 || offset + usaOffset + usaCount * 2 > offset + recordSize) return false;
+            ushort usn = ReadUInt16(buffer, offset + usaOffset);
+            for (int i = 1; i < usaCount; i++)
+            {
+                int sectorEnd = offset + i * bytesPerSector - 2;
+                if (sectorEnd < offset || sectorEnd + 2 > offset + recordSize) return false;
+                if (ReadUInt16(buffer, sectorEnd) != usn) return false;
+                ushort replacement = ReadUInt16(buffer, offset + usaOffset + i * 2);
+                buffer[sectorEnd] = (byte)(replacement & 0xFF);
+                buffer[sectorEnd + 1] = (byte)((replacement >> 8) & 0xFF);
+            }
+            return true;
+        }
+
+        private static List<NtfsDataRun> DecodeDataRuns(byte[] buffer, int offset, int end)
+        {
+            List<NtfsDataRun> runs = new List<NtfsDataRun>();
+            long currentLcn = 0;
+            int p = offset;
+            while (p < end)
+            {
+                int header = buffer[p++];
+                if (header == 0) break;
+                int lengthBytes = header & 0x0F;
+                int offsetBytes = (header >> 4) & 0x0F;
+                if (lengthBytes == 0 || p + lengthBytes + offsetBytes > end) break;
+
+                long clusterLength = ReadVariableUInt(buffer, p, lengthBytes);
+                p += lengthBytes;
+                long lcnDelta = ReadVariableInt(buffer, p, offsetBytes);
+                p += offsetBytes;
+                currentLcn += lcnDelta;
+                if (clusterLength > 0 && currentLcn > 0)
+                {
+                    NtfsDataRun run = new NtfsDataRun();
+                    run.Lcn = currentLcn;
+                    run.ClusterLength = clusterLength;
+                    runs.Add(run);
+                }
+            }
+            return runs;
+        }
+
+        private static bool ReadAt(SafeFileHandle handle, long offset, byte[] buffer, int count)
+        {
+            long newPosition;
+            if (!SetFilePointerEx(handle, offset, out newPosition, 0)) return false;
+            int read;
+            return ReadFile(handle, buffer, count, out read, IntPtr.Zero) && read == count;
+        }
+
+        private static DateTime FileTimeToDateTime(long fileTime)
+        {
+            try
+            {
+                if (fileTime <= 0) return DateTime.MinValue;
+                return DateTime.FromFileTimeUtc(fileTime).ToLocalTime();
+            }
+            catch { return DateTime.MinValue; }
+        }
+
+        private static long ReadVariableUInt(byte[] buffer, int offset, int count)
+        {
+            long value = 0;
+            for (int i = 0; i < count; i++)
+                value |= ((long)buffer[offset + i]) << (8 * i);
+            return value;
+        }
+
+        private static long ReadVariableInt(byte[] buffer, int offset, int count)
+        {
+            if (count == 0) return 0;
+            long value = ReadVariableUInt(buffer, offset, count);
+            long signBit = 1L << (count * 8 - 1);
+            if ((value & signBit) != 0)
+                value |= -1L << (count * 8);
+            return value;
+        }
+
+        private static ushort ReadUInt16(byte[] b, int o)
+        {
+            return (ushort)(b[o] | (b[o + 1] << 8));
+        }
+
+        private static uint ReadUInt32(byte[] b, int o)
+        {
+            return (uint)(b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24));
+        }
+
+        private static int ReadInt32(byte[] b, int o)
+        {
+            return unchecked((int)ReadUInt32(b, o));
+        }
+
+        private static ulong ReadUInt64(byte[] b, int o)
+        {
+            uint low = ReadUInt32(b, o);
+            uint high = ReadUInt32(b, o + 4);
+            return ((ulong)high << 32) | low;
+        }
+
+        private static long ReadInt64(byte[] b, int o)
+        {
+            return unchecked((long)ReadUInt64(b, o));
+        }
+    }
+
+    // =====================================================================
+    // BÖLÜM: TEMİZLİK KURALLARI MOTORU (CleanupRules)
+    // =====================================================================
+    // Amacı  : Disk analizinden sonra, hangi dosyaların "kesin güvenli", hangilerinin
+    //          "riskli / sistem dosyası" veya "kullanıcı şahsi verisi" olduğunu analiz ederek
+    //          yanlışlıkla kritik dosyaların silinmesini önler.
+    // Kurallar: 1. Sistem dosyası koruması (Protected System Path): Windows, Program Files,
+    //             System Volume Information altındaki hiçbir dosya otomatik olarak silinmez.
+    //          2. Şahsi veri koruması (User Content): Masaüstü, Belgeler, Resimler,
+    //             Downloads gibi doğrudan kullanıcıya ait klasörler otomatik silme kapsamı dışındadır.
+    //          3. Güvenli silinebilir uzantılar: .tmp, .bak, .old, .dmp ve Temp klasörü altındaki
+    //             belirli bir tarihten eski (ör. 7 gün) log dosyaları.
+    // =====================================================================
+    public static class CleanupRules
+    {
+        private static readonly string WindowsPath = Lower(Environment.GetFolderPath(Environment.SpecialFolder.Windows));
+        private static readonly string ProgramFilesPath = Lower(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles));
+        private static readonly string ProgramFilesX86Path = Lower(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86));
+
+        public static bool IsSafeCleanupCandidate(FileNode file)
+        {
+            if (file == null) return false;
+            return IsSafeCleanupCandidate(file.Extension, file.Name, file.FullPath);
+        }
+
+        public static bool IsStrictSafeCleanupCandidate(FileNode file)
+        {
+            if (file == null || string.IsNullOrEmpty(file.FullPath)) return false;
+            if (file.SharedHardLink || file.HardLinkCount > 1) return false;
+            if (IsProtectedSystemPath(file.FullPath)) return false;
+
+            string ext = NormalizeExtension(file.Extension);
+            string path = Lower(file.FullPath);
+            string name = Lower(file.Name);
+            if (IsNeverAutoDeleteExtension(ext)) return false;
+            if (IsUserContentPath(path) && path.IndexOf("\\$recycle.bin\\") < 0) return false;
+
+            int ageDays = AgeDays(file.LastModified);
+            if (path.IndexOf("\\$recycle.bin\\") >= 0)
+                return ageDays >= 1;
+
+            if (IsTemporaryLocation(path))
+            {
+                if (ageDays < 7) return false;
+                if (ext == ".tmp" || ext == ".temp" || ext == ".log" || ext == ".dmp") return true;
+                if ((ext == ".bak" || ext == ".old") && ageDays >= 30) return true;
+                if (!string.IsNullOrEmpty(name) && name.StartsWith("~")) return true;
+                return false;
+            }
+
+            if (IsCacheLocation(path))
+                return ageDays >= 14 && !IsInstallerOrUserDataExtension(ext);
+
+            if (path.IndexOf("\\logs\\") >= 0 || path.EndsWith("\\logs"))
+                return ext == ".log" && ageDays >= 14;
+
+            if (ext == ".dmp" && ageDays >= 7 && !IsUserContentPath(path))
+                return true;
+
+            return false;
+        }
+
+        public static bool IsReviewCleanupCandidate(FileNode file)
+        {
+            if (file == null || IsStrictSafeCleanupCandidate(file)) return false;
+            if (!IsSafeCleanupCandidate(file)) return false;
+            if (IsProtectedSystemPath(file.FullPath)) return false;
+            string path = Lower(file.FullPath);
+            if (IsUserContentPath(path)) return false;
+            return true;
+        }
+
+        public static bool IsSafeCleanupCandidate(string extension, string name, string fullPath)
+        {
+            string ext = NormalizeExtension(extension);
+            string lowerPath = Lower(fullPath);
+            string lowerName = Lower(name);
+
+            if (ext == ".tmp" || ext == ".bak" || ext == ".old" || ext == ".dmp") return true;
+            if (ext == ".log" && (IsTemporaryLocation(lowerPath) || lowerPath.IndexOf("\\logs\\") >= 0)) return true;
+            if (!string.IsNullOrEmpty(lowerName) && lowerName.StartsWith("~")) return true;
+            if (IsTemporaryLocation(lowerPath)) return true;
+            if (IsCacheLocation(lowerPath)) return true;
+            if (lowerPath.IndexOf("\\$recycle.bin\\") >= 0) return true;
+            return false;
+        }
+
+        public static bool IsProtectedSystemPath(string fullPath)
+        {
+            string path = Lower(fullPath);
+            if (string.IsNullOrEmpty(path)) return false;
+            if (IsTemporaryLocation(path) || path.IndexOf("\\$recycle.bin\\") >= 0) return false;
+
+            if (!string.IsNullOrEmpty(WindowsPath) && path.StartsWith(WindowsPath)) return true;
+            if (!string.IsNullOrEmpty(ProgramFilesPath) && path.StartsWith(ProgramFilesPath)) return true;
+            if (!string.IsNullOrEmpty(ProgramFilesX86Path) && path.StartsWith(ProgramFilesX86Path)) return true;
+            if (path.IndexOf("\\system volume information\\") >= 0) return true;
+            return false;
+        }
+
+        public static double LocationScore(string fullPath)
+        {
+            string path = Lower(fullPath);
+            if (string.IsNullOrEmpty(path)) return 0.0;
+            if (path.IndexOf("\\$recycle.bin\\") >= 0) return 1.0;
+            if (IsTemporaryLocation(path)) return 0.95;
+            if (IsCacheLocation(path)) return 0.80;
+            if (path.IndexOf("\\downloads\\") >= 0) return 0.35;
+            if (path.IndexOf("\\logs\\") >= 0) return 0.35;
+            return 0.0;
+        }
+
+        public static bool HasCleanupHint(string extension, string name, string fullPath)
+        {
+            return HasCleanupHint(extension, name, fullPath, LocationScore(fullPath));
+        }
+
+        public static bool HasCleanupHint(string extension, string name, string fullPath, double locationScore)
+        {
+            string ext = NormalizeExtension(extension);
+            string lowerName = Lower(name);
+            if (ext == ".tmp" || ext == ".log" || ext == ".bak" || ext == ".old" || ext == ".dmp") return true;
+            if (!string.IsNullOrEmpty(lowerName) && lowerName.StartsWith("~")) return true;
+            return locationScore >= 0.75;
+        }
+
+        public static bool IsArchiveCandidate(FileNode file, DateTime threshold)
+        {
+            if (file == null || file.Size < 100L * 1024L * 1024L) return false;
+            if (file.LastModified > threshold) return false;
+            string ext = NormalizeExtension(file.Extension);
+            string path = Lower(file.FullPath);
+            if (ext == ".zip" || ext == ".rar" || ext == ".7z" ||
+                ext == ".iso" || ext == ".img" || ext == ".wim" ||
+                ext == ".mp4" || ext == ".mkv" || ext == ".mov" ||
+                ext == ".avi" || ext == ".psd" || ext == ".blend" ||
+                ext == ".bak" || ext == ".old")
+                return true;
+            return path.IndexOf("\\downloads\\") >= 0 || path.IndexOf("\\desktop\\") >= 0;
+        }
+
+        public static string CleanupReason(FileNode file)
+        {
+            if (file == null) return "Güvenli temizlik sinyali";
+            string ext = NormalizeExtension(file.Extension);
+            string path = Lower(file.FullPath);
+            string name = Lower(file.Name);
+            if (path.IndexOf("\\$recycle.bin\\") >= 0) return "Geri dönüşüm kutusu kalıntısı";
+            if (IsTemporaryLocation(path)) return "Geçici klasör dosyası";
+            if (path.IndexOf("\\cache\\") >= 0 || path.IndexOf("\\caches\\") >= 0) return "Önbellek dosyası";
+            if (ext == ".tmp") return "Geçici dosya uzantısı";
+            if (ext == ".log") return "Log dosyası";
+            if (ext == ".bak" || ext == ".old") return "Eski yedek dosyası";
+            if (ext == ".dmp") return "Hata dökümü dosyası";
+            if (!string.IsNullOrEmpty(name) && name.StartsWith("~")) return "Geçici adlandırma sinyali";
+            return "Düşük riskli temizlik sinyali";
+        }
+
+        public static string CleanupConfidence(FileNode file)
+        {
+            if (file == null) return "Güven: bilinmiyor";
+            if (IsStrictSafeCleanupCandidate(file))
+                return "Güven: yüksek";
+            if (IsReviewCleanupCandidate(file))
+                return "Güven: incele";
+            return "Güven: düşük";
+        }
+
+        public static string ArchiveReason(FileNode file)
+        {
+            if (file == null) return "Eski ve büyük dosya";
+            string ext = NormalizeExtension(file.Extension);
+            if (ext == ".mp4" || ext == ".mkv" || ext == ".mov" || ext == ".avi")
+                return "Eski büyük medya dosyası";
+            if (ext == ".zip" || ext == ".rar" || ext == ".7z")
+                return "Eski arşiv paketi";
+            if (ext == ".iso" || ext == ".img" || ext == ".wim")
+                return "Disk imajı / kurulum arşivi";
+            if (ext == ".psd" || ext == ".blend")
+                return "Büyük proje dosyası";
+            return "Eski ve büyük dosya";
+        }
+
+        private static bool IsTemporaryLocation(string lowerPath)
+        {
+            if (string.IsNullOrEmpty(lowerPath)) return false;
+            return lowerPath.IndexOf("\\temp\\") >= 0 ||
+                   lowerPath.IndexOf("\\tmp\\") >= 0 ||
+                   lowerPath.EndsWith("\\temp") ||
+                   lowerPath.EndsWith("\\tmp");
+        }
+
+        private static bool IsCacheLocation(string lowerPath)
+        {
+            if (string.IsNullOrEmpty(lowerPath)) return false;
+            return lowerPath.IndexOf("\\cache\\") >= 0 ||
+                   lowerPath.IndexOf("\\caches\\") >= 0 ||
+                   lowerPath.IndexOf("\\code cache\\") >= 0 ||
+                   lowerPath.IndexOf("\\shadercache\\") >= 0 ||
+                   lowerPath.IndexOf("\\shader-cache\\") >= 0;
+        }
+
+        private static bool IsUserContentPath(string lowerPath)
+        {
+            if (string.IsNullOrEmpty(lowerPath)) return false;
+            return lowerPath.IndexOf("\\desktop\\") >= 0 ||
+                   lowerPath.IndexOf("\\documents\\") >= 0 ||
+                   lowerPath.IndexOf("\\downloads\\") >= 0 ||
+                   lowerPath.IndexOf("\\pictures\\") >= 0 ||
+                   lowerPath.IndexOf("\\videos\\") >= 0 ||
+                   lowerPath.IndexOf("\\music\\") >= 0 ||
+                   lowerPath.IndexOf("\\onedrive\\") >= 0;
+        }
+
+        private static bool IsNeverAutoDeleteExtension(string ext)
+        {
+            return ext == ".exe" || ext == ".dll" || ext == ".sys" || ext == ".msi" ||
+                   ext == ".msp" || ext == ".ocx" || ext == ".drv" || ext == ".bat" ||
+                   ext == ".cmd" || ext == ".ps1" || ext == ".reg" || ext == ".ini" ||
+                   ext == ".config" || ext == ".db" || ext == ".sqlite" || ext == ".pst" ||
+                   ext == ".ost" || ext == ".doc" || ext == ".docx" || ext == ".xls" ||
+                   ext == ".xlsx" || ext == ".ppt" || ext == ".pptx" || ext == ".pdf" ||
+                   ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".mp4" ||
+                   ext == ".zip" || ext == ".rar" || ext == ".7z" || ext == ".iso";
+        }
+
+        private static bool IsInstallerOrUserDataExtension(string ext)
+        {
+            return IsNeverAutoDeleteExtension(ext) ||
+                   ext == ".pak" || ext == ".dat" || ext == ".bin" || ext == ".vhd" ||
+                   ext == ".vhdx" || ext == ".wim";
+        }
+
+        private static int AgeDays(DateTime date)
+        {
+            if (date == DateTime.MinValue) return 0;
+            double days = (DateTime.Now - date).TotalDays;
+            if (days < 0) return 0;
+            if (days > int.MaxValue) return int.MaxValue;
+            return (int)days;
+        }
+
+        private static string NormalizeExtension(string extension)
+        {
+            return string.IsNullOrEmpty(extension) ? "" : extension.ToLowerInvariant();
+        }
+
+        private static string Lower(string value)
+        {
+            return string.IsNullOrEmpty(value) ? "" : value.ToLowerInvariant();
+        }
+    }
+
+    // =====================================================================
+    // BÖLÜM: ADAPTİF PUANLAMA/SKORLAMA MODELİ (AdaptiveScoringModel)
+    // =====================================================================
+    // Amacı  : Her bir dosyanın silinmeye veya arşivlenmeye ne kadar uygun olduğunu
+    //          gösteren 0 ile 100 arasında ağırlıklı bir "Gereksizlik Skoru" üretir.
+    // Metot  : İstatistiki ağırlıklandırma (weighted sum) modeli kullanılır:
+    //          - Boyut Skoru (%34)  : Dosya boyutu büyüdükçe logaritmik artış.
+    //          - Yaş Skoru (%24)    : Son değişiklik tarihinin eskiliğine göre doğrusal artış.
+    //          - Tip/İpucu (%24)    : Uzantı .tmp/.bak/.log ise doğrudan tetiklenir.
+    //          - Konum Skoru (%18)  : Temp veya recycle bin gibi geçici dizinlerde olma durumu.
+    //          - Koruma Cezası (-%28): Windows veya Program Files altındaysa skor düşürülür.
+    // =====================================================================
     public class AdaptiveScoringModel
     {
+        private static readonly double SizeScoreLogDenominator = Math.Log((5.0 * 1024.0 * 1024.0) + 1.0);
+
         public int Score(FileInfo file)
         {
-            return Score(file.Length, file.LastWriteTime, file.Extension, file.Name, DateTime.Now.AddYears(-1));
+            return Score(file.Length, file.LastWriteTime, file.Extension, file.Name, file.FullName, DateTime.Now.AddYears(-1));
         }
 
         public int Score(long size, DateTime lastWriteTime, string extension, string name, DateTime oldFileThreshold)
         {
-            string ext = extension == null ? "" : extension.ToLowerInvariant();
-            double sz  = Math.Min(1.0, size / (500.0 * 1024 * 1024));
-            double age = lastWriteTime < oldFileThreshold ? 1.0 : 0.0;
-            double tmp = (ext == ".tmp" || ext == ".log" ||
-                          ext == ".bak" || ext == ".old" ||
-                          (!string.IsNullOrEmpty(name) && name.StartsWith("~"))) ? 1.0 : 0.0;
-            return (int)(((sz * 0.4) + (age * 0.4) + (tmp * 0.2)) * 100);
+            return Score(size, lastWriteTime, extension, name, "", oldFileThreshold);
+        }
+
+        public int Score(long size, DateTime lastWriteTime, string extension, string name, string fullPath, DateTime oldFileThreshold)
+        {
+            double kb = Math.Max(1.0, size / 1024.0);
+            double sizeScore = Math.Min(1.0, Math.Log(kb + 1.0) / SizeScoreLogDenominator);
+            double ageScore = lastWriteTime < oldFileThreshold
+                ? Math.Min(1.0, Math.Max(0.0, (oldFileThreshold - lastWriteTime).TotalDays) / 365.0)
+                : 0.0;
+            double locationScore = CleanupRules.LocationScore(fullPath);
+            double cleanupScore = CleanupRules.HasCleanupHint(extension, name, fullPath, locationScore) ? 1.0 : 0.0;
+            double protectedPenalty = CleanupRules.IsProtectedSystemPath(fullPath) ? 1.0 : 0.0;
+
+            double score = (sizeScore * 34.0) +
+                           (ageScore * 24.0) +
+                           (cleanupScore * 24.0) +
+                           (locationScore * 18.0) -
+                           (protectedPenalty * 28.0);
+
+            if (score < 0.0) score = 0.0;
+            if (score > 100.0) score = 100.0;
+            return (int)Math.Round(score);
         }
     }
 
+    /// <summary>
+    /// Disk tarama ağacındaki bir klasör düğümünü temsil eden veri yapısı.
+    /// </summary>
     public class DirectoryNode
     {
-        public string Name; public string Path; public long Size;
+        public string Name; public string Path; public long Size; public long AllocatedSize;
+        public int FileCount; public bool FilesArePartial;
         public List<FileNode> Files = new List<FileNode>();
         public List<DirectoryNode> SubDirectories = new List<DirectoryNode>();
     }
 
+    /// <summary>
+    /// Disk tarama ağacındaki bir dosya yaprağını temsil eden veri yapısı.
+    /// </summary>
     public class FileNode
     {
         public string Name; public string FullPath; public long Size;
+        public string DirectoryPath;
+        public long AllocatedSize; public long CountedSize; public long CountedAllocatedSize;
         public int Score; public DateTime LastModified; public string Extension;
+        public bool SharedHardLink; public uint HardLinkCount; public string FileIdKey;
     }
 
     public class DuplicateGroup
@@ -5654,14 +8373,72 @@ namespace AdvancedDiskAnalyzer
         public DirectoryNode Directory;
     }
 
+    // =====================================================================
+    // BÖLÜM: UYGULAMA GİRİŞ NOKTASI VE BEKLENMEYEN HATA YAKALAYICILAR
+    // =====================================================================
+    // Amacı  : Programın ana başlatıcısıdır (Main). Ayrıca runtime (çalışma zamanı)
+    //          sırasında oluşabilecek kritik veya thread bazlı beklenmeyen hataları
+    //          (unhandled exceptions) yakalayarak uygulamanın aniden kapanmasını
+    //          engeller ve hata dökümünü local log dosyasına kaydeder.
+    // =====================================================================
     static class Program
     {
+        /// <summary>
+        /// Uygulamanın ana giriş noktası. Single Thread Apartment (STAThread) modelini uygular.
+        /// </summary>
         [STAThread]
         static void Main()
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            
+            // Hata yakalama delegasyonlarının atanması
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e)
+            {
+                HandleUnexpectedException(e.Exception, true);
+            };
+            AppDomain.CurrentDomain.UnhandledException += delegate(object sender, UnhandledExceptionEventArgs e)
+            {
+                HandleUnexpectedException(e.ExceptionObject as Exception, false);
+            };
             Application.Run(new MainForm());
+        }
+
+        /// <summary>
+        /// Çalışma zamanı hatalarını kullanıcıya bildirir ve log dosyasına yazılmasını sağlar.
+        /// </summary>
+        private static void HandleUnexpectedException(Exception ex, bool canContinue)
+        {
+            try { WriteCrashLog(ex); } catch { }
+            string message = ex == null ? "Bilinmeyen bir hata oluştu." : ex.Message;
+            string text = canContinue
+                ? "Beklenmeyen bir durum yakalandı. Uygulama devam etmeyi deneyecek.\n\n" + message
+                : "Beklenmeyen bir kritik durum oluştu. Uygulama kapanabilir.\n\n" + message;
+            try
+            {
+                MessageBox.Show(text, "Advanced Disk Analyzer", MessageBoxButtons.OK,
+                    canContinue ? MessageBoxIcon.Warning : MessageBoxIcon.Error);
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Yakalanan hatanın detaylarını (Stack Trace dahil) Yerel Uygulama Verileri
+        /// (LocalAppData/AdvancedDiskAnalyzer/Logs/crash.log) dizinine yazar.
+        /// </summary>
+        private static void WriteCrashLog(Exception ex)
+        {
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "AdvancedDiskAnalyzer", "Logs");
+            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            string file = Path.Combine(dir, "crash.log");
+            using (StreamWriter writer = new StreamWriter(file, true, new UTF8Encoding(true)))
+            {
+                writer.WriteLine("[" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "]");
+                writer.WriteLine(ex == null ? "Bilinmeyen hata" : ex.ToString());
+                writer.WriteLine();
+            }
         }
     }
 }

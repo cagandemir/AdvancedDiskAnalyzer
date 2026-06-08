@@ -9,9 +9,19 @@ admin-token.txt
 private-key.xml
 server-private-key.xml
 
-# Logo dosyasi (kod icine gomuldu)
+# Logo ve Ikonlar (Derleme icin app.ico gereklidir, haric tutulur)
 logo.ico
 *.ico
+!app.ico
+
+# Gorsel Varliklar
+!logo.png
+!logo_hq.png
+
+# Gecici Dosyalar ve Loglar
+*.log
+*.tmp
+*.bak
 
 # Visual Studio
 .vs/
